@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-dotenv
+httpx
+langchain
+langchain-openai
+langgraph
+llama-index
+opencv-python
+pillow
+scenedetect
+pydantic
+pydantic-settings
+python-multipart
+pyautogen
