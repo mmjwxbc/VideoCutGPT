@@ -10,7 +10,17 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": false
-        }
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}/backend"
+        },
+        // {
+        //     "name": "UV: Run app.main Module",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "module": "app.main",
+        //     "console": "integratedTerminal",
+        //     "justMyCode": false,
+        //     "python": "${workspaceFolder}/.venv/bin/python",
+        // }
     ]
 }

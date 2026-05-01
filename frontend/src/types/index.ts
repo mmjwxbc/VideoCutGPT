@@ -46,6 +46,27 @@ export interface ExecutionEventItem {
   created_at: string;
 }
 
+export interface WorkflowArtifactState {
+  label: string;
+  status: string;
+  detail: string;
+  requested: boolean;
+  needs_refresh: boolean;
+  updated_at: string;
+}
+
+export interface EditingWorkflowState {
+  request_summary: string;
+  confirmation_required: boolean;
+  confirmed_plan_summary: string;
+  keyframe_analysis: WorkflowArtifactState;
+  video_summary: WorkflowArtifactState;
+  subtitle_draft: WorkflowArtifactState;
+  editing_plan: WorkflowArtifactState;
+  english_title: WorkflowArtifactState;
+  tags: WorkflowArtifactState;
+}
+
 export interface CaptionAssistantSession {
   session_id: string;
   platform: string;
@@ -61,6 +82,8 @@ export interface CaptionAssistantSession {
   editing_plan: string;
   english_title: string;
   tags: string[];
+  editing_state: EditingWorkflowState;
+  planner_stream: string;
   messages: ChatMessage[];
   status:
     | 'idle'

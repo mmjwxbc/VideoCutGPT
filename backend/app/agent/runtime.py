@@ -11,6 +11,7 @@ from app.ai.types import AICompletionRequest, AIMessage
 ToolFunc = Callable[[str], Awaitable[str]]
 ProgressFunc = Callable[[str], Awaitable[None]]
 TraceFunc = Callable[[str, str, str], Awaitable[None]]
+PlannerStreamFunc = Callable[[str, str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -80,6 +81,7 @@ class PlanAndExecuteRuntime:
         should_skip_step: Callable[[ReActStep, List[Dict[str, str]]], bool] | None,
         progress: ProgressFunc,
         trace: TraceFunc,
+        planner_stream: PlannerStreamFunc | None = None,
     ) -> PlanAndExecuteResult:
         scratchpad: List[Dict[str, str]] = []
         for _ in range(self._max_steps):
@@ -89,6 +91,7 @@ class PlanAndExecuteRuntime:
                 execution_plan=execution_plan,
                 context_prompt=context_prompt,
                 scratchpad=scratchpad,
+                planner_stream=planner_stream,
             )
             if not step.action:
                 step = fallback_step(scratchpad)
@@ -128,6 +131,7 @@ class PlanAndExecuteRuntime:
         execution_plan: List[str],
         context_prompt: str,
         scratchpad: List[Dict[str, str]],
+        planner_stream: PlannerStreamFunc | None = None,
     ) -> ReActStep:
         prompt = (
             "你是一个采用 ReAct 风格的短视频创作执行代理。"
@@ -140,15 +144,28 @@ class PlanAndExecuteRuntime:
             f"\n上下文：{context_prompt}"
             f"\n已有观察：{json.dumps(scratchpad, ensure_ascii=False)}"
         )
-        response = await self._adapter.complete(
+        content = ""
+        pending_delta = ""
+        last_emit_chars = 0
+        async for delta in self._adapter.stream(
             AICompletionRequest(
                 model=self._model,
                 timeout_seconds=self._timeout_seconds,
                 require_json=True,
                 messages=[AIMessage(role="user", content=prompt)],
             )
-        )
-        parsed = self._parse_json_object(response.content)
+        ):
+            if not delta:
+                continue
+            content += delta
+            pending_delta += delta
+            if planner_stream and len(content) - last_emit_chars >= 40:
+                await planner_stream(content, pending_delta)
+                pending_delta = ""
+                last_emit_chars = len(content)
+        if planner_stream and pending_delta:
+            await planner_stream(content, pending_delta)
+        parsed = self._parse_json_object(content)
         if not isinstance(parsed, dict):
             return ReActStep(thought="", action="", action_input="")
         return ReActStep(

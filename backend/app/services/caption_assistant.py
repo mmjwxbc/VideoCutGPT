@@ -55,6 +55,41 @@ class ExecutionEventItem:
 
 
 @dataclass
+class WorkflowArtifactState:
+    label: str
+    status: str = "idle"
+    detail: str = ""
+    requested: bool = False
+    needs_refresh: bool = False
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
+class EditingWorkflowState:
+    request_summary: str = ""
+    confirmation_required: bool = False
+    confirmed_plan_summary: str = ""
+    keyframe_analysis: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="关键帧分析")
+    )
+    video_summary: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="视频摘要")
+    )
+    subtitle_draft: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="字幕草稿")
+    )
+    editing_plan: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="剪辑方案")
+    )
+    english_title: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="英文标题")
+    )
+    tags: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="标签")
+    )
+
+
+@dataclass
 class CaptionSession:
     session_id: str
     video_path: str
@@ -73,6 +108,9 @@ class CaptionSession:
     editing_plan: str = ""
     english_title: str = ""
     tags: List[str] = field(default_factory=list)
+    editing_state: EditingWorkflowState = field(default_factory=EditingWorkflowState)
+    planner_stream: str = ""
+    inferred_targets: Dict[str, Any] = field(default_factory=dict)
     status: str = "idle"
     progress_message: str = ""
     error_message: str = ""
@@ -143,14 +181,15 @@ class CaptionConversationAssistant:
             video_path=video_path,
             platform=platform,
             product_manual=product_manual or "",
-            status="queued",
-            progress_message="任务已创建，准备生成 Agent 执行计划。",
+            status="planning",
+            progress_message="任务已创建，正在拆解需求并生成执行计划。",
         )
         session.messages.append(ConversationMessage(role="user", content=user_prompt))
+        session.editing_state.request_summary = user_prompt.strip()
         self.store.save(session)
         self._ensure_session_primitives(session.session_id)
         self._publish_snapshot(session, "session_created")
-        asyncio.create_task(self._prepare_initial_plan(session.session_id, user_prompt))
+        asyncio.create_task(self._prepare_execution_plan(session.session_id, user_prompt))
         return self._serialize(session)
 
     async def continue_session(self, session_id: str, user_prompt: str) -> Dict[str, Any]:
@@ -161,14 +200,17 @@ class CaptionConversationAssistant:
             raise ValueError("session is waiting for plan selection")
 
         session.messages.append(ConversationMessage(role="user", content=user_prompt))
-        session.status = "queued"
-        session.progress_message = "已收到修改要求，等待开始。"
+        session.status = "planning"
+        session.progress_message = "已收到你的需求，正在拆解执行计划。"
         session.error_message = ""
+        session.planner_stream = ""
+        session.editing_state.request_summary = user_prompt.strip()
+        session.editing_state.confirmation_required = True
         session.updated_at = _utcnow()
         self.store.save(session)
         self._ensure_session_primitives(session_id)
         self._publish_snapshot(session, "message_queued")
-        asyncio.create_task(self._process_followup_session(session_id, user_prompt))
+        asyncio.create_task(self._prepare_execution_plan(session_id, user_prompt))
         return self._serialize(session)
 
     async def confirm_execution_plan(
@@ -200,6 +242,10 @@ class CaptionConversationAssistant:
         session.status = "queued"
         session.progress_message = "已确认执行项，等待 Agent 开始执行。"
         session.error_message = ""
+        session.editing_state.confirmation_required = False
+        session.editing_state.confirmed_plan_summary = " / ".join(
+            option.title for option in session.plan_options if option.id in set(chosen_ids)
+        )
         session.updated_at = _utcnow()
         self.store.save(session)
         self._ensure_session_primitives(session_id)
@@ -252,20 +298,45 @@ class CaptionConversationAssistant:
         with self._meta_lock:
             return self._session_locks.setdefault(session_id, asyncio.Lock())
 
-    async def _prepare_initial_plan(self, session_id: str, user_prompt: str) -> None:
+    async def _prepare_execution_plan(self, session_id: str, user_prompt: str) -> None:
         async with self._get_session_lock(session_id):
             try:
                 session = self.store.get(session_id)
-                await self._set_progress(session, "planning", "Agent 正在生成可执行计划...")
-                session.plan_options = await self._build_initial_plan_options(session, user_prompt)
+                await self._set_progress(session, "planning", "Agent 正在拆解你的需求并生成执行计划...")
+                plan_payload = await self._build_plan_proposal(session, user_prompt)
+                if not plan_payload.get("is_supported_request", True):
+                    session.execution_plan = [
+                        "识别当前请求不属于当前会话支持的视频创意产出范围",
+                        "明确当前会话可处理的能力边界",
+                        "引导用户提供视频分析、字幕、剪辑或标题标签需求",
+                    ]
+                    session.messages.append(
+                        ConversationMessage(
+                            role="assistant",
+                            content=self._compose_scope_guard_reply(user_prompt, plan_payload),
+                        )
+                    )
+                    session.status = "completed"
+                    session.progress_message = "本轮修改完成。"
+                    session.updated_at = _utcnow()
+                    self.store.save(session)
+                    self._publish_snapshot(session, "completed")
+                    self._ensure_completion_event(session_id).set()
+                    return
+
+                session.inferred_targets = plan_payload
+                session.plan_options = self._build_plan_options_from_targets(plan_payload)
                 session.selected_plan_ids = [
-                    option.id for option in session.plan_options if option.required or option.selected
+                    option.id for option in session.plan_options if option.selected or option.required
                 ]
-                session.execution_plan = [
-                    f"{option.title}：{option.description}" for option in session.plan_options
-                ]
+                session.execution_plan = list(plan_payload.get("steps") or [])
+                session.editing_state.request_summary = str(
+                    plan_payload.get("summary") or user_prompt
+                ).strip()
+                session.editing_state.confirmation_required = True
+                self._apply_planned_state(session, plan_payload)
                 session.status = "awaiting_plan_selection"
-                session.progress_message = "请勾选要执行的项，关键帧分析为必选项。"
+                session.progress_message = "请确认 Agent 执行计划。"
                 session.updated_at = _utcnow()
                 self.store.save(session)
                 self._publish_snapshot(session, "plan_ready")
@@ -277,25 +348,22 @@ class CaptionConversationAssistant:
         async with self._get_session_lock(session_id):
             try:
                 session = self.store.get(session_id)
-                if "keyframe_analysis" not in set(session.selected_plan_ids):
-                    raise ValueError("keyframe_analysis must be selected")
-                await self._run_selected_initial_turn(session, user_prompt)
-                self._ensure_completion_event(session_id).set()
-            except Exception as exc:
-                await self._fail_session(session_id, exc)
-
-    async def _process_followup_session(self, session_id: str, user_prompt: str) -> None:
-        async with self._get_session_lock(session_id):
-            try:
-                session = self.store.get(session_id)
-                await self._set_progress(session, "processing", "正在根据你的新要求改稿...")
-                await self._run_turn(session, user_prompt)
+                await self._set_progress(session, "processing", "Agent 正在执行已确认的计划...")
+                await self._run_confirmed_turn(session, user_prompt)
                 self._ensure_completion_event(session_id).set()
             except Exception as exc:
                 await self._fail_session(session_id, exc)
 
     async def _prepare_video_context(self, session: CaptionSession) -> None:
         await self._set_progress(session, "processing", "正在提取关键帧...")
+        self._update_workflow_artifact(
+            session,
+            "keyframe_analysis",
+            status="in_progress",
+            detail="正在提取关键帧。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.keyframes = await asyncio.to_thread(
             extract_keyframes,
             session.video_path,
@@ -323,9 +391,25 @@ class CaptionConversationAssistant:
             session.frame_analyses,
             f"已完成 {len(session.frame_analyses)} 条关键帧理解。",
         )
+        self._update_workflow_artifact(
+            session,
+            "keyframe_analysis",
+            status="completed",
+            detail=f"已完成 {len(session.frame_analyses)} 条关键帧理解。",
+            requested=True,
+            needs_refresh=False,
+        )
         self._publish_snapshot(session)
 
         await self._set_progress(session, "processing", "正在总结视频内容...")
+        self._update_workflow_artifact(
+            session,
+            "video_summary",
+            status="in_progress",
+            detail="正在整理最新视频摘要。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.video_summary = await self._summarize_video(session)
         session.updated_at = _utcnow()
         self.store.save(session)
@@ -335,12 +419,27 @@ class CaptionConversationAssistant:
             session.video_summary,
             "视频摘要已生成。",
         )
+        self._update_workflow_artifact(
+            session,
+            "video_summary",
+            status="completed",
+            detail="视频摘要已生成。",
+            requested=True,
+            needs_refresh=False,
+        )
         self._publish_snapshot(session)
 
     async def _run_keyframe_vision_subagent(self, session: CaptionSession) -> str:
-        if session.video_summary and session.frame_analyses:
+        if (
+            session.video_summary
+            and session.frame_analyses
+            and not session.editing_state.keyframe_analysis.needs_refresh
+        ):
             return "关键帧视觉子代理发现视频上下文已存在，跳过重复执行。"
 
+        session.keyframes = []
+        session.frame_analyses = []
+        session.video_summary = ""
         await self._prepare_video_context(session)
         return (
             "关键帧视觉子代理已完成。"
@@ -349,15 +448,15 @@ class CaptionConversationAssistant:
             f"\n视频摘要：{session.video_summary or '无'}"
         )
 
-    async def _run_selected_initial_turn(self, session: CaptionSession, user_prompt: str) -> None:
-        targets = self._plan_targets_from_selection(session.selected_plan_ids)
+    async def _run_confirmed_turn(self, session: CaptionSession, user_prompt: str) -> None:
+        targets = self._plan_targets_from_selection(
+            session.selected_plan_ids,
+            session.inferred_targets,
+        )
         session.agent_trace = []
         session.execution_events = []
-        session.execution_plan = [
-            f"{option.title}：{option.description}"
-            for option in session.plan_options
-            if option.id in set(session.selected_plan_ids)
-        ]
+        session.planner_stream = ""
+        self._mark_selected_items_in_progress(session, targets)
         self.store.save(session)
         self._publish_snapshot(session)
         scratchpad = await self._execute_targets(session, user_prompt, targets)
@@ -367,43 +466,6 @@ class CaptionConversationAssistant:
             scratchpad,
             targets,
             completion_message="所选执行项已完成。",
-        )
-
-    async def _run_turn(self, session: CaptionSession, user_prompt: str) -> None:
-        targets = await self._determine_update_targets(session, user_prompt)
-        session.execution_events = []
-        if not targets["is_supported_request"]:
-            session.execution_plan = [
-                "识别当前请求不属于当前会话支持的视频创意产出范围",
-                "明确当前会话可处理的能力边界",
-                "引导用户提供字幕、剪辑、标题或标签需求",
-            ]
-            session.messages.append(
-                ConversationMessage(
-                    role="assistant",
-                    content=self._compose_scope_guard_reply(user_prompt, targets),
-                )
-            )
-            session.updated_at = _utcnow()
-            self.store.save(session)
-            session.status = "completed"
-            session.progress_message = "本轮修改完成。"
-            session.updated_at = _utcnow()
-            self.store.save(session)
-            self._publish_snapshot(session, "completed")
-            return
-
-        session.agent_trace = []
-        session.execution_plan = await self._build_plan(session, user_prompt, targets)
-        self.store.save(session)
-        self._publish_snapshot(session)
-        scratchpad = await self._execute_targets(session, user_prompt, targets)
-        await self._finalize_turn(
-            session,
-            user_prompt,
-            scratchpad,
-            targets,
-            completion_message="本轮修改完成。",
         )
 
     async def _execute_targets(
@@ -444,6 +506,7 @@ class CaptionConversationAssistant:
             should_skip_step=should_skip_step,
             progress=lambda message: self._set_progress(session, "processing", message),
             trace=lambda thought, action, observation: self._append_trace(session, thought, action, observation),
+            planner_stream=lambda content, delta: self._stream_planner_text(session, content, delta),
         )
         return result.scratchpad
 
@@ -631,12 +694,19 @@ class CaptionConversationAssistant:
             session.english_title = await self._generate_english_title(session, "补全英文标题。")
         if targets["update_tags"] and not session.tags:
             session.tags = await self._generate_tags(session, "补全标签。")
-        session.messages.append(
-            ConversationMessage(
-                role="assistant",
-                content=self._build_assistant_reply_fallback(session, targets),
-            )
-        )
+        session.messages.append(ConversationMessage(role="assistant", content=""))
+        session.updated_at = _utcnow()
+        self.store.save(session)
+        self._publish_snapshot(session)
+        message_index = len(session.messages) - 1
+        assistant_reply = (
+            await self._compose_assistant_reply(session, user_prompt, scratchpad, targets)
+        ).strip()
+        if not assistant_reply:
+            assistant_reply = self._build_assistant_reply_fallback(session, targets)
+        if 0 <= message_index < len(session.messages):
+            session.messages[message_index].content = assistant_reply
+        session.planner_stream = ""
         session.status = "completed"
         session.progress_message = completion_message
         session.updated_at = _utcnow()
@@ -745,6 +815,130 @@ class CaptionConversationAssistant:
             },
         )
 
+    async def _stream_planner_text(
+        self,
+        session: CaptionSession,
+        content: str,
+        delta: str,
+    ) -> None:
+        session.planner_stream = content
+        session.updated_at = _utcnow()
+        self.store.save(session)
+        self.events.publish(
+            session.session_id,
+            "planner_chunk",
+            {
+                "session_id": session.session_id,
+                "content": content,
+                "delta": delta,
+                "updated_at": session.updated_at,
+            },
+        )
+
+    def _update_workflow_artifact(
+        self,
+        session: CaptionSession,
+        artifact: str,
+        *,
+        status: str | None = None,
+        detail: str | None = None,
+        requested: bool | None = None,
+        needs_refresh: bool | None = None,
+    ) -> None:
+        item = getattr(session.editing_state, artifact)
+        if status is not None:
+            item.status = status
+        if detail is not None:
+            item.detail = detail
+        if requested is not None:
+            item.requested = requested
+        if needs_refresh is not None:
+            item.needs_refresh = needs_refresh
+        item.updated_at = _utcnow()
+
+    def _apply_planned_state(self, session: CaptionSession, plan_payload: Dict[str, Any]) -> None:
+        selected = set(plan_payload.get("selected_ids") or [])
+        force_keyframe_refresh = bool(plan_payload.get("force_keyframe_refresh"))
+        artifact_map = {
+            "keyframe_analysis": "keyframe_analysis",
+            "subtitle_draft": "subtitle_draft",
+            "editing_plan": "editing_plan",
+            "english_title": "english_title",
+            "tags": "tags",
+        }
+        for option_id, artifact_name in artifact_map.items():
+            if option_id in selected:
+                self._update_workflow_artifact(
+                    session,
+                    artifact_name,
+                    status="planned",
+                    detail="等待用户确认执行计划。",
+                    requested=True,
+                    needs_refresh=force_keyframe_refresh if option_id == "keyframe_analysis" else False,
+                )
+            else:
+                self._update_workflow_artifact(
+                    session,
+                    artifact_name,
+                    status="idle",
+                    detail="本轮未计划执行。",
+                    requested=False,
+                    needs_refresh=False,
+                )
+
+        if "keyframe_analysis" in selected:
+            self._update_workflow_artifact(
+                session,
+                "video_summary",
+                status="planned",
+                detail="将随关键帧分析一起刷新。",
+                requested=True,
+                needs_refresh=force_keyframe_refresh,
+            )
+        else:
+            self._update_workflow_artifact(
+                session,
+                "video_summary",
+                status="idle",
+                detail="沿用当前视频理解。",
+                requested=False,
+                needs_refresh=False,
+            )
+
+    def _mark_selected_items_in_progress(self, session: CaptionSession, targets: Dict[str, Any]) -> None:
+        if targets.get("run_keyframe_analysis"):
+            self._update_workflow_artifact(
+                session,
+                "keyframe_analysis",
+                status="in_progress",
+                detail="正在提取并分析关键帧。",
+                requested=True,
+                needs_refresh=False,
+            )
+            self._update_workflow_artifact(
+                session,
+                "video_summary",
+                status="in_progress",
+                detail="将基于最新关键帧重建视频摘要。",
+                requested=True,
+                needs_refresh=False,
+            )
+        for key, flag, detail in [
+            ("subtitle_draft", targets.get("update_subtitles"), "正在生成或更新字幕草稿。"),
+            ("editing_plan", targets.get("update_editing_plan"), "正在生成或更新剪辑方案。"),
+            ("english_title", targets.get("update_title"), "正在生成或更新英文标题。"),
+            ("tags", targets.get("update_tags"), "正在生成或更新标签。"),
+        ]:
+            if flag:
+                self._update_workflow_artifact(
+                    session,
+                    key,
+                    status="in_progress",
+                    detail=detail,
+                    requested=True,
+                    needs_refresh=False,
+                )
+
     async def _stream_artifact_text(
         self,
         session: CaptionSession,
@@ -767,6 +961,25 @@ class CaptionConversationAssistant:
         session.status = "error"
         session.error_message = str(exc)
         session.progress_message = "处理失败。"
+        session.planner_stream = ""
+        for artifact_name in [
+            "keyframe_analysis",
+            "video_summary",
+            "subtitle_draft",
+            "editing_plan",
+            "english_title",
+            "tags",
+        ]:
+            item = getattr(session.editing_state, artifact_name)
+            if item.status in {"planned", "in_progress"}:
+                self._update_workflow_artifact(
+                    session,
+                    artifact_name,
+                    status="error",
+                    detail=str(exc),
+                    requested=item.requested,
+                    needs_refresh=item.needs_refresh,
+                )
         session.updated_at = _utcnow()
         self.store.save(session)
         self._publish_snapshot(session, "error")
@@ -876,73 +1089,148 @@ class CaptionConversationAssistant:
         )
         return response.content
 
-    async def _build_initial_plan_options(
+    async def _build_plan_proposal(
         self,
         session: CaptionSession,
         user_prompt: str,
-    ) -> List[ExecutionPlanOption]:
+    ) -> Dict[str, Any]:
         prompt = (
-            "你是短视频创作规划器。标准执行项固定为："
-            "keyframe_analysis、subtitle_draft、editing_plan、english_title、tags。"
-            "\n请只为这些标准项补充描述，并给出 selected 建议。"
-            "\nkeyframe_analysis 必须 required=true 且 selected=true。"
+            "你是短视频创作任务规划器。你要根据用户提问自动拆解执行计划，"
+            "而不是要求用户手动指定字幕、剪辑或标题任务。"
+            "\n标准执行项固定为：keyframe_analysis、subtitle_draft、editing_plan、english_title、tags。"
+            "\n规则："
+            "\n1. 如果用户要求重新分析关键帧、重新理解视频、重新看素材，必须包含 keyframe_analysis。"
+            "\n2. 如果用户表达为“剪辑视频”“重剪”“重新剪一版”“做完整剪辑”，默认包含 subtitle_draft、editing_plan、english_title、tags；如果当前没有视频上下文，额外包含 keyframe_analysis。"
+            "\n3. 如果只是改字幕，只保留字幕相关。"
+            "\n4. 如果只是改剪辑节奏、镜头、转场、时长，只保留 editing_plan；若明确说重新分析素材，再加 keyframe_analysis。"
+            "\n5. 如果请求不属于当前视频创意会话能力，is_supported_request=false。"
+            "\n6. 需要返回给用户确认，所以输出必须是简洁、可执行的计划。"
             "\n只返回 JSON，格式为 "
-            '{"options":[{"id":"subtitle_draft","title":"字幕生成","description":"...","selected":true}]}'
+            '{"summary":"...","steps":["..."],"selected_ids":["editing_plan"],"is_supported_request":true,"reason":"...","requests_full_editing":false,"force_keyframe_refresh":false}'
             f"\n\n平台：{session.platform}"
             f"\n说明书：{session.product_manual or '无'}"
             f"\n用户需求：{user_prompt}"
+            f"\n已有视频摘要：{session.video_summary or '无'}"
+            f"\n已有字幕草稿：{session.subtitle_draft[:1200] if session.subtitle_draft else '无'}"
+            f"\n已有剪辑方案：{session.editing_plan[:1200] if session.editing_plan else '无'}"
+            f"\n已有英文标题：{session.english_title or '无'}"
+            f"\n已有标签：{json.dumps(session.tags, ensure_ascii=False)}"
         )
-        raw = await self._text_complete(prompt, require_json=True)
+        raw = await self._text_stream_complete(
+            prompt,
+            temperature=0.1,
+            trace_label="plan_proposal",
+            on_delta=lambda content, delta: self._stream_planner_text(session, content, delta),
+        )
         parsed = self._parse_json_object(raw)
-        return self._coerce_plan_options(parsed.get("options") if isinstance(parsed, dict) else None)
+        return self._coerce_plan_proposal(session, user_prompt, parsed)
 
-    def _coerce_plan_options(self, raw_options: Any) -> List[ExecutionPlanOption]:
-        allowed = {
-            "keyframe_analysis": ("关键帧分析", "提取关键帧并做多模态分析，沉淀视频结构与卖点上下文。", True),
-            "subtitle_draft": ("字幕生成", "基于关键帧理解和平台语气生成字幕初稿。", False),
-            "editing_plan": ("剪辑脚本生成", "输出镜头级剪辑脚本，包含 hook、节奏推进和 CTA。", False),
-            "english_title": ("英文标题生成", "为投放素材或成片生成英文标题。", False),
-            "tags": ("标签生成", "生成适合平台分发和投放的英文标签。", False),
+    def _coerce_plan_proposal(
+        self,
+        session: CaptionSession,
+        user_prompt: str,
+        parsed: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized_prompt = user_prompt.lower()
+        selected_ids = parsed.get("selected_ids") if isinstance(parsed, dict) else None
+        selected = {
+            str(item).strip()
+            for item in (selected_ids if isinstance(selected_ids, list) else [])
+            if str(item).strip()
         }
-        options_by_id: Dict[str, ExecutionPlanOption] = {}
-        if isinstance(raw_options, list):
-            for item in raw_options:
-                if not isinstance(item, dict):
-                    continue
-                option_id = str(item.get("id", "")).strip()
-                if option_id not in allowed:
-                    continue
-                default_title, default_description, default_required = allowed[option_id]
-                options_by_id[option_id] = ExecutionPlanOption(
-                    id=option_id,
-                    title=str(item.get("title") or default_title).strip() or default_title,
-                    description=str(item.get("description") or default_description).strip() or default_description,
-                    required=default_required or bool(item.get("required")),
-                    selected=default_required or bool(item.get("selected")),
-                )
+        allowed_ids = {
+            "keyframe_analysis",
+            "subtitle_draft",
+            "editing_plan",
+            "english_title",
+            "tags",
+        }
+        selected &= allowed_ids
 
-        normalized: List[ExecutionPlanOption] = []
-        for option_id in ["keyframe_analysis", "subtitle_draft", "editing_plan", "english_title", "tags"]:
-            if option_id in options_by_id:
-                option = options_by_id[option_id]
-                if option_id == "keyframe_analysis":
-                    option.required = True
-                    option.selected = True
-                normalized.append(option)
-                continue
-            title, description, required = allowed[option_id]
-            normalized.append(
-                ExecutionPlanOption(
-                    id=option_id,
-                    title=title,
-                    description=description,
-                    required=required,
-                    selected=required,
-                )
+        requests_full_editing = bool(parsed.get("requests_full_editing")) if isinstance(parsed, dict) else False
+        force_keyframe_refresh = bool(parsed.get("force_keyframe_refresh")) if isinstance(parsed, dict) else False
+        is_supported_request = bool(parsed.get("is_supported_request", True)) if isinstance(parsed, dict) else True
+        reason = str(parsed.get("reason", "")).strip() if isinstance(parsed, dict) else ""
+        summary = str(parsed.get("summary", "")).strip() if isinstance(parsed, dict) else ""
+        steps = parsed.get("steps") if isinstance(parsed, dict) else None
+
+        if any(keyword in normalized_prompt for keyword in ["重新分析关键帧", "重分析关键帧", "重新看关键帧", "重新分析素材", "重新理解视频"]):
+            force_keyframe_refresh = True
+            selected.add("keyframe_analysis")
+
+        if any(keyword in normalized_prompt for keyword in ["剪辑视频", "重剪", "重新剪", "完整剪辑", "剪一版", "出成片"]):
+            requests_full_editing = True
+            selected.update({"subtitle_draft", "editing_plan", "english_title", "tags"})
+            if not session.video_summary:
+                selected.add("keyframe_analysis")
+
+        if not selected and is_supported_request:
+            selected.update({"subtitle_draft", "editing_plan"})
+
+        if force_keyframe_refresh:
+            selected.add("keyframe_analysis")
+
+        if session.video_summary == "" and (
+            "subtitle_draft" in selected or "editing_plan" in selected
+        ):
+            selected.add("keyframe_analysis")
+
+        fallback_steps = ["理解用户本轮目标", "读取当前视频上下文"]
+        if "keyframe_analysis" in selected:
+            fallback_steps.append("重新分析关键帧并更新视频理解")
+        if "subtitle_draft" in selected:
+            fallback_steps.append("生成或更新字幕草稿")
+        if "editing_plan" in selected:
+            fallback_steps.append("生成或更新剪辑方案")
+        if "english_title" in selected:
+            fallback_steps.append("生成或更新英文标题")
+        if "tags" in selected:
+            fallback_steps.append("生成或更新标签")
+        fallback_steps.append("整理回复并等待用户确认执行")
+
+        return {
+            "summary": summary or user_prompt.strip(),
+            "steps": [str(step).strip() for step in steps[:6]] if isinstance(steps, list) and steps else fallback_steps,
+            "selected_ids": [
+                option_id
+                for option_id in ["keyframe_analysis", "subtitle_draft", "editing_plan", "english_title", "tags"]
+                if option_id in selected
+            ],
+            "is_supported_request": is_supported_request,
+            "reason": reason or "根据用户需求自动拆解执行计划。",
+            "requests_full_editing": requests_full_editing,
+            "force_keyframe_refresh": force_keyframe_refresh,
+        }
+
+    def _build_plan_options_from_targets(
+        self,
+        targets: Dict[str, Any],
+    ) -> List[ExecutionPlanOption]:
+        option_defs = {
+            "keyframe_analysis": ("关键帧分析", "重新提取并分析关键帧，刷新视频理解上下文。"),
+            "subtitle_draft": ("字幕草稿", "基于当前需求生成或更新字幕草稿。"),
+            "editing_plan": ("剪辑方案", "生成或更新镜头级剪辑方案。"),
+            "english_title": ("英文标题", "生成适合投放或命名的英文标题。"),
+            "tags": ("标签", "生成适合平台分发的标签。"),
+        }
+        selected = set(targets.get("selected_ids") or [])
+        return [
+            ExecutionPlanOption(
+                id=option_id,
+                title=title,
+                description=description,
+                required=False,
+                selected=option_id in selected,
             )
-        return normalized
+            for option_id, (title, description) in option_defs.items()
+            if option_id in selected
+        ]
 
-    def _plan_targets_from_selection(self, selected_plan_ids: List[str]) -> Dict[str, Any]:
+    def _plan_targets_from_selection(
+        self,
+        selected_plan_ids: List[str],
+        inferred_targets: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         selected = set(selected_plan_ids)
         return {
             "run_keyframe_analysis": "keyframe_analysis" in selected,
@@ -951,7 +1239,9 @@ class CaptionConversationAssistant:
             "update_title": "english_title" in selected,
             "update_tags": "tags" in selected,
             "is_supported_request": True,
-            "reason": "根据用户勾选的 Agent 执行项执行。",
+            "reason": str((inferred_targets or {}).get("reason") or "根据用户确认的执行计划执行。"),
+            "requests_full_editing": bool((inferred_targets or {}).get("requests_full_editing")),
+            "force_keyframe_refresh": bool((inferred_targets or {}).get("force_keyframe_refresh")),
         }
 
     async def _analyze_video_frames(self, session: CaptionSession) -> List[str]:
@@ -1022,110 +1312,6 @@ class CaptionConversationAssistant:
             on_delta=lambda content, delta: self._stream_artifact_text(session, "video_summary", content, delta),
         )
 
-    async def _determine_update_targets(self, session: CaptionSession, user_prompt: str) -> Dict[str, Any]:
-        prompt = (
-            "你是短视频制作任务分流器。请判断用户本轮需求需要更新哪些产物。"
-            "\n产物只有四个：subtitle_draft、editing_plan、english_title、tags。"
-            "\n只返回 JSON，格式为 "
-            '{"update_subtitles":true,"update_editing_plan":false,"update_title":false,"update_tags":false,"is_supported_request":true,"reason":"..."}'
-            f"\n\n用户需求：{user_prompt}"
-            f"\n当前字幕草稿：{session.subtitle_draft[:800] if session.subtitle_draft else '无'}"
-            f"\n当前剪辑方案：{session.editing_plan[:800] if session.editing_plan else '无'}"
-            f"\n当前英文标题：{session.english_title or '无'}"
-            f"\n当前标签：{json.dumps(session.tags, ensure_ascii=False)}"
-        )
-        raw = await self._text_complete(prompt, require_json=True)
-        parsed = self._parse_json_object(raw)
-        if isinstance(parsed, dict) and parsed.get("is_supported_request") is not None:
-            return {
-                "run_keyframe_analysis": False,
-                "update_subtitles": bool(parsed.get("update_subtitles")),
-                "update_editing_plan": bool(parsed.get("update_editing_plan")),
-                "update_title": bool(parsed.get("update_title")),
-                "update_tags": bool(parsed.get("update_tags")),
-                "is_supported_request": bool(parsed.get("is_supported_request")),
-                "reason": str(parsed.get("reason", "")).strip() or "根据用户需求自动判断。",
-            }
-
-        normalized_prompt = user_prompt.lower()
-        subtitle_keywords = ["字幕", "文案", "口播", "翻译", "台词", "语气", "中文"]
-        editing_keywords = ["剪辑", "镜头", "转场", "节奏", "分镜", "时长", "结构", "hook", "钩子", "cta"]
-        title_keywords = ["英文标题", "headline", "title", "英文题目"]
-        tag_keywords = ["tag", "tags", "标签", "hashtags", "hashtag", "话题"]
-        unsupported_keywords = [
-            "agent",
-            "前端",
-            "frontend",
-            "ui",
-            "页面",
-            "界面",
-            "bug",
-            "历史记录",
-            "header",
-            "sidebar",
-            "工作区",
-        ]
-        update_subtitles = any(keyword in normalized_prompt for keyword in subtitle_keywords)
-        update_editing_plan = any(keyword in normalized_prompt for keyword in editing_keywords)
-        update_title = any(keyword in normalized_prompt for keyword in title_keywords)
-        update_tags = any(keyword in normalized_prompt for keyword in tag_keywords)
-        is_unsupported_request = (
-            any(keyword in normalized_prompt for keyword in unsupported_keywords)
-            and not update_subtitles
-            and not update_editing_plan
-            and not update_title
-            and not update_tags
-        )
-        if is_unsupported_request:
-            return {
-                "run_keyframe_analysis": False,
-                "update_subtitles": False,
-                "update_editing_plan": False,
-                "update_title": False,
-                "update_tags": False,
-                "is_supported_request": False,
-                "reason": "当前输入更像系统、产品或界面需求，不属于字幕或剪辑修改指令。",
-            }
-        if not update_subtitles and not update_editing_plan and not update_title and not update_tags:
-            update_subtitles = True
-            update_editing_plan = True
-        return {
-            "run_keyframe_analysis": False,
-            "update_subtitles": update_subtitles,
-            "update_editing_plan": update_editing_plan,
-            "update_title": update_title,
-            "update_tags": update_tags,
-            "is_supported_request": True,
-            "reason": "基于关键词回退判断本轮需要更新的产物。",
-        }
-
-    async def _build_plan(self, session: CaptionSession, user_prompt: str, targets: Dict[str, Any]) -> List[str]:
-        prompt = (
-            "你是视频制作任务规划器。请根据用户需求、当前视频理解和已有产出，给出本轮最合理的 3 到 5 个执行步骤。"
-            '\n只返回 JSON，格式为 {"goal":"...","steps":["...","..."]}。'
-            f"\n\n用户需求：{user_prompt}"
-            f"\n本轮更新范围：{json.dumps(targets, ensure_ascii=False)}"
-            f"\n视频摘要：{session.video_summary}"
-            f"\n当前字幕草稿：{session.subtitle_draft or '无'}"
-            f"\n当前剪辑方案：{session.editing_plan or '无'}"
-        )
-        raw = await self._text_complete(prompt, require_json=True)
-        parsed = self._parse_json_object(raw)
-        steps = parsed.get("steps") if isinstance(parsed, dict) else None
-        if isinstance(steps, list) and steps:
-            return [str(step).strip() for step in steps[:5] if str(step).strip()]
-        fallback_steps = ["理解用户本轮修改目标", "读取视频与说明书上下文"]
-        if targets["update_subtitles"]:
-            fallback_steps.append("更新字幕草稿")
-        if targets["update_editing_plan"]:
-            fallback_steps.append("更新剪辑执行方案")
-        if targets["update_title"]:
-            fallback_steps.append("生成或更新英文标题")
-        if targets["update_tags"]:
-            fallback_steps.append("生成或更新标签")
-        fallback_steps.append("整理最终结果并直接回复用户")
-        return fallback_steps
-
     async def _tool_read_video_context(self, session: CaptionSession, *_args: Any) -> str:
         return f"视频摘要：{session.video_summary}\n关键帧分析：\n" + "\n".join(session.frame_analyses)
 
@@ -1142,6 +1328,14 @@ class CaptionConversationAssistant:
 
     async def _tool_write_subtitles(self, session: CaptionSession, user_prompt: str, action_input: str) -> str:
         session.subtitle_draft = await self._generate_subtitle_draft(session, action_input or user_prompt)
+        self._update_workflow_artifact(
+            session,
+            "subtitle_draft",
+            status="completed",
+            detail="字幕草稿已更新。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.updated_at = _utcnow()
         self.store.save(session)
         await self._publish_artifact_updated(session, "subtitle_draft", session.subtitle_draft, "字幕草稿已更新。")
@@ -1150,6 +1344,14 @@ class CaptionConversationAssistant:
 
     async def _tool_write_edit_plan(self, session: CaptionSession, user_prompt: str, action_input: str) -> str:
         session.editing_plan = await self._generate_editing_plan(session, action_input or user_prompt)
+        self._update_workflow_artifact(
+            session,
+            "editing_plan",
+            status="completed",
+            detail="剪辑执行方案已更新。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.updated_at = _utcnow()
         self.store.save(session)
         await self._publish_artifact_updated(session, "editing_plan", session.editing_plan, "剪辑执行方案已更新。")
@@ -1158,6 +1360,14 @@ class CaptionConversationAssistant:
 
     async def _tool_write_title(self, session: CaptionSession, user_prompt: str, action_input: str) -> str:
         session.english_title = await self._generate_english_title(session, action_input or user_prompt)
+        self._update_workflow_artifact(
+            session,
+            "english_title",
+            status="completed",
+            detail="英文标题已更新。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.updated_at = _utcnow()
         self.store.save(session)
         await self._publish_artifact_updated(session, "english_title", session.english_title, "英文标题已更新。")
@@ -1166,6 +1376,14 @@ class CaptionConversationAssistant:
 
     async def _tool_write_tags(self, session: CaptionSession, user_prompt: str, action_input: str) -> str:
         session.tags = await self._generate_tags(session, action_input or user_prompt)
+        self._update_workflow_artifact(
+            session,
+            "tags",
+            status="completed",
+            detail="标签已更新。",
+            requested=True,
+            needs_refresh=False,
+        )
         session.updated_at = _utcnow()
         self.store.save(session)
         await self._publish_artifact_updated(session, "tags", session.tags, "标签已更新。")
@@ -1284,11 +1502,15 @@ class CaptionConversationAssistant:
             f"\n最新英文标题：{session.english_title or '无'}"
             f"\n最新标签：{json.dumps(session.tags, ensure_ascii=False)}"
         )
-        message_index = max(len(session.messages) - 1, 0)
         return await self._text_stream_complete(
             prompt,
             trace_label="assistant_reply",
-            on_delta=lambda content, delta: self._stream_assistant_reply(session, message_index, content, delta),
+            on_delta=lambda content, delta: self._stream_assistant_reply(
+                session,
+                len(session.messages) - 1,
+                content,
+                delta,
+            ),
         )
 
     async def _stream_assistant_reply(
@@ -1383,6 +1605,8 @@ class CaptionConversationAssistant:
             "editing_plan": session.editing_plan,
             "english_title": session.english_title,
             "tags": session.tags,
+            "editing_state": asdict(session.editing_state),
+            "planner_stream": session.planner_stream,
             "messages": [asdict(message) for message in session.messages],
             "status": session.status,
             "progress_message": session.progress_message,

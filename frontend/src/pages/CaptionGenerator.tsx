@@ -1,5 +1,6 @@
 import React, {
   startTransition,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -7,17 +8,18 @@ import React, {
 } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  ArrowUp,
   Bot,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clapperboard,
-  Film,
   RefreshCcw,
   Sparkles,
   User,
 } from 'lucide-react';
 
 import { Button } from '../components/ui/button';
+import ChatComposer from '../components/ChatComposer';
 import {
   captionSessionEventsUrl,
   confirmCaptionAssistantPlan,
@@ -28,16 +30,18 @@ import {
 import {
   CaptionAssistantSession,
   ChatMessage,
+  EditingWorkflowState,
   ExecutionEventItem,
   ExecutionPlanOption,
   Keyframe,
+  WorkflowArtifactState,
 } from '../types';
 
 const PLATFORM_OPTIONS = [
-  { value: 'tiktok', label: 'TikTok' },
-  { value: 'youtube', label: 'YouTube' },
-  { value: 'instagram', label: 'Instagram' },
-  { value: 'facebook', label: 'Facebook' },
+  { value: 'tiktok', label: 'TikTok', iconClassName: 'bg-slate-900' },
+  { value: 'douyin', label: 'Douyin', iconClassName: 'bg-rose-500' },
+  { value: 'youtube', label: 'YouTube', iconClassName: 'bg-red-500' },
+  { value: 'instagram', label: 'Instagram', iconClassName: 'bg-fuchsia-500' },
 ];
 
 const SNAPSHOT_EVENTS = new Set([
@@ -50,7 +54,7 @@ const SNAPSHOT_EVENTS = new Set([
   'error',
 ]);
 
-const SSE_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
 const appendUniqueExecutionEvent = (
   current: ExecutionEventItem[],
@@ -67,6 +71,29 @@ const appendUniqueExecutionEvent = (
     return current;
   }
   return [...current, nextItem];
+};
+
+const ensureAssistantMessageSlot = (
+  currentMessages: ChatMessage[],
+  messageIndex: number,
+  createdAt: string,
+) => {
+  const nextMessages = [...currentMessages];
+  while (nextMessages.length <= messageIndex) {
+    nextMessages.push({
+      role: 'assistant',
+      content: '',
+      created_at: createdAt,
+    });
+  }
+  if (nextMessages[messageIndex]?.role !== 'assistant') {
+    nextMessages.splice(messageIndex + 1, 0, {
+      role: 'assistant',
+      content: '',
+      created_at: createdAt,
+    });
+  }
+  return nextMessages;
 };
 
 const getSessionStatusRank = (status: CaptionAssistantSession['status']) => {
@@ -117,8 +144,7 @@ const buildAssistantReplyFromSession = (nextSession: CaptionAssistantSession) =>
   return sections.join('\n\n') || nextSession.progress_message || '本轮产物已生成完成。';
 };
 
-const panelClassName =
-  'rounded-[22px] border border-white/70 bg-white/80 shadow-[0_16px_42px_rgba(15,23,42,0.08)] backdrop-blur-xl';
+const panelClassName = 'border border-slate-800 bg-[#111111]';
 
 const formatTimestamp = (value: string) =>
   new Date(value).toLocaleString('zh-CN', {
@@ -162,7 +188,6 @@ interface SessionListItem {
   title: string;
   subtitle: string;
   updated_at: string;
-  status: CaptionAssistantSession['status'];
 }
 
 interface ExecutionGroup {
@@ -175,6 +200,90 @@ interface ArtifactCardProps {
   content: string;
   defaultOpen?: boolean;
 }
+
+interface AssistantTurnCardProps {
+  message: ChatMessage;
+  status: CaptionAssistantSession['status'] | undefined;
+  isRunning: boolean;
+  progressText: string;
+  plannerStream: string;
+  executionGroups: ExecutionGroup[];
+  artifactSections: AssistantArtifactSection[];
+}
+
+interface AssistantArtifactSection {
+  title: string;
+  content: string;
+  defaultOpen?: boolean;
+}
+
+interface WorkflowStateRow {
+  key: string;
+  item: WorkflowArtifactState;
+}
+
+const buildSessionHistoryItem = (
+  nextSession: CaptionAssistantSession,
+  fallbackTitle?: string,
+  previousItem?: SessionListItem,
+): SessionListItem => {
+  const titleSource =
+    previousItem?.title ||
+    fallbackTitle ||
+    nextSession.messages.find((message) => message.role === 'user')?.content ||
+    '未命名会话';
+  const subtitleSource =
+    previousItem?.subtitle ||
+    nextSession.video_summary ||
+    nextSession.messages[nextSession.messages.length - 1]?.content ||
+    nextSession.progress_message ||
+    '等待处理';
+
+  return {
+    session_id: nextSession.session_id,
+    title: titleSource.trim().slice(0, 28) || '未命名会话',
+    subtitle: subtitleSource.trim().slice(0, 42) || '等待处理',
+    updated_at: nextSession.updated_at,
+  };
+};
+
+const buildAssistantArtifactSections = (
+  nextSession: CaptionAssistantSession | null,
+): AssistantArtifactSection[] => {
+  if (!nextSession) {
+    return [];
+  }
+
+  const sections: AssistantArtifactSection[] = [];
+  if (nextSession.subtitle_draft.trim()) {
+    sections.push({ title: '字幕草稿', content: nextSession.subtitle_draft.trim() });
+  }
+  if (nextSession.editing_plan.trim()) {
+    sections.push({ title: '剪辑方案', content: nextSession.editing_plan.trim() });
+  }
+  if (nextSession.english_title.trim()) {
+    sections.push({
+      title: '英文标题',
+      content: nextSession.english_title.trim(),
+      defaultOpen: false,
+    });
+  }
+  if (nextSession.tags.length) {
+    sections.push({
+      title: '标签',
+      content: nextSession.tags.map((tag) => `- ${tag}`).join('\n'),
+      defaultOpen: false,
+    });
+  }
+  if (nextSession.video_summary.trim()) {
+    sections.push({
+      title: '视频摘要',
+      content: nextSession.video_summary.trim(),
+      defaultOpen: false,
+    });
+  }
+  return sections;
+};
 
 const groupExecutionEvents = (events: ExecutionEventItem[]): ExecutionGroup[] => {
   const groups: ExecutionGroup[] = [];
@@ -221,13 +330,13 @@ const Panel: React.FC<PanelProps> = ({
 }) => (
   <section className={`${panelClassName} flex min-h-0 flex-col ${className}`}>
     {hideHeader ? null : (
-      <div className="border-b border-slate-100 px-3.5 py-2.5">
+      <div className="border-b border-slate-800 px-3.5 py-2.5">
         {eyebrow ? (
-          <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-400">
+          <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
             {eyebrow}
           </p>
         ) : null}
-        <h2 className={`text-[13px] font-semibold text-slate-900 ${eyebrow ? 'mt-1.5' : ''}`}>
+        <h2 className={`text-[13px] font-semibold text-slate-100 ${eyebrow ? 'mt-1.5' : ''}`}>
           {title}
         </h2>
       </div>
@@ -246,20 +355,20 @@ const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
       }`}
     >
       {isAssistant ? (
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white shadow-sm">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
           <Bot className="h-3 w-3" />
         </div>
       ) : null}
 
       <div
-        className={`w-fit min-w-0 rounded-2xl px-3 py-2.5 shadow-[0_10px_24px_rgba(15,23,42,0.06)] ${
+        className={`w-fit min-w-0 rounded-2xl px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ${
           isAssistant
-            ? 'max-w-[min(92%,52rem)] border border-slate-200 bg-white text-slate-700'
-            : 'max-w-[min(72%,34rem)] bg-slate-900 text-white'
+            ? 'max-w-[min(92%,52rem)] border border-slate-800 bg-[#161616] text-slate-200'
+            : 'max-w-[min(72%,34rem)] bg-[#2a2a2a] text-white'
           }`}
       >
         <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
-          <span className={isAssistant ? 'text-slate-400' : 'text-white/60'}>
+          <span className={isAssistant ? 'text-slate-500' : 'text-white/60'}>
             {isAssistant ? 'Assistant' : 'You'}
           </span>
         </div>
@@ -269,7 +378,7 @@ const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
       </div>
 
       {!isAssistant ? (
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-300 shadow-sm">
           <User className="h-3 w-3" />
         </div>
       ) : null}
@@ -296,21 +405,21 @@ const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
   return (
     <details
       open={defaultOpen}
-      className="group rounded-[18px] border border-slate-200 bg-slate-50/80"
+      className="group rounded-[18px] border border-slate-800 bg-[#171717]"
     >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2.5 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${statusClassName}`} />
-          <h4 className="truncate text-[13px] font-medium text-slate-900">{title}</h4>
+          <h4 className="truncate text-[13px] font-medium text-slate-100">{title}</h4>
         </div>
         <div className="flex items-center gap-2.5">
-          <span className="text-[10px] uppercase tracking-[0.22em] text-slate-400">
+          <span className="text-[10px] uppercase tracking-[0.22em] text-slate-500">
             {statusLabel}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition group-open:rotate-180" />
+          <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
         </div>
       </summary>
-      <div className="border-t border-slate-200 px-3 py-2.5 text-[13px] leading-5 text-slate-600">
+      <div className="border-t border-slate-800 px-3 py-2.5 text-[13px] leading-5 text-slate-400">
         {children}
       </div>
     </details>
@@ -324,24 +433,211 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({
 }) => (
   <details
     open={defaultOpen}
-    className="group rounded-[18px] border border-slate-200 bg-white/92"
+    className="group rounded-[18px] border border-slate-800 bg-[#141414]"
   >
     <summary className="flex cursor-pointer list-none items-center justify-between gap-2.5 px-3 py-2.5">
-      <h4 className="truncate text-[13px] font-medium text-slate-900">{title}</h4>
-      <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition group-open:rotate-180" />
+      <h4 className="truncate text-[13px] font-medium text-slate-100">{title}</h4>
+      <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
     </summary>
-    <div className="border-t border-slate-200 px-3 py-2.5">
-      <pre className="whitespace-pre-wrap break-words font-sans text-[12px] leading-5 text-slate-700">
+    <div className="border-t border-slate-800 px-3 py-2.5">
+      <pre className="whitespace-pre-wrap break-words font-sans text-[12px] leading-5 text-slate-300">
         {content}
       </pre>
     </div>
   </details>
 );
 
+const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
+  message,
+  status,
+  isRunning,
+  progressText,
+  plannerStream,
+  executionGroups,
+  artifactSections,
+}) => (
+  <article className="flex w-full items-start gap-2.5 justify-start pr-3 sm:pr-8">
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
+      <Bot className="h-3 w-3" />
+    </div>
+
+    <div className="w-full max-w-[min(92%,52rem)] rounded-2xl border border-slate-800 bg-[#161616] px-3 py-2.5 text-slate-300 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+      <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
+        <span className="text-slate-500">Assistant</span>
+      </div>
+
+      {plannerStream.trim() || executionGroups.length || isRunning ? (
+        <div className="mb-3 space-y-2.5 border-b border-slate-800 pb-3">
+          <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[12px] font-medium text-slate-100">思考过程</p>
+                <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                  {status === 'awaiting_plan_selection'
+                    ? '计划已生成，等待你确认后执行'
+                    : isRunning
+                      ? progressText
+                      : `${executionGroups.length} 个工具步骤`}
+                </p>
+              </div>
+              <span className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                {status === 'awaiting_plan_selection'
+                  ? '待确认'
+                  : isRunning
+                    ? '进行中'
+                    : '已完成'}
+              </span>
+            </div>
+          </div>
+
+          {plannerStream.trim() ? (
+            <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
+              <p className="mb-1 text-[11px] font-medium text-slate-300">Agent 规划输出</p>
+              <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+                {plannerStream}
+              </p>
+            </div>
+          ) : null}
+
+          {executionGroups.map((group, index) => {
+            const completed = group.children.some((item) => item.kind === 'tool_completed');
+            return (
+              <details
+                key={`${group.parent.created_at}-${group.parent.title}-${index}`}
+                open={index === executionGroups.length - 1}
+                className="group rounded-[14px] border border-slate-800 bg-[#1b1b1b]"
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          completed ? 'bg-emerald-500' : 'bg-sky-500'
+                        }`}
+                      />
+                      <p className="truncate text-[12px] font-medium text-slate-100">
+                        {group.parent.title}
+                      </p>
+                    </div>
+                    <p className="mt-1 break-words text-[11px] leading-4 text-slate-400">
+                      {group.parent.detail}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                      {completed ? '已完成' : '进行中'}
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
+                  </div>
+                </summary>
+                <div className="border-t border-slate-800 px-3 py-2.5">
+                  <div className="space-y-2">
+                    {group.children.map((item, childIndex) => (
+                      <details
+                        key={`${item.created_at}-${item.kind}-${childIndex}`}
+                        open={item.kind === 'tool_completed' || childIndex === group.children.length - 1}
+                        className="group rounded-[12px] border border-slate-800 bg-[#121212]"
+                      >
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-[11px] font-medium text-slate-200">
+                              {item.title}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="text-[10px] text-slate-500">
+                              {formatTimestamp(item.created_at)}
+                            </span>
+                            <ChevronDown className="h-3 w-3 text-slate-500 transition group-open:rotate-180" />
+                          </div>
+                        </summary>
+                        <div className="border-t border-slate-800 px-3 py-2">
+                          <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+                            {item.detail}
+                          </p>
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <p className="whitespace-pre-wrap break-words text-[12px] leading-5">
+        {message.content}
+      </p>
+
+      {artifactSections.length ? (
+        <div className="mt-3 space-y-2.5 border-t border-slate-800 pt-3">
+          {artifactSections.map((section) => (
+            <ArtifactCard
+              key={section.title}
+              title={section.title}
+              content={section.content}
+              defaultOpen={section.defaultOpen ?? true}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  </article>
+);
+
+const getWorkflowRows = (
+  workflowState: EditingWorkflowState | null | undefined,
+): WorkflowStateRow[] => {
+  if (!workflowState) {
+    return [];
+  }
+  return [
+    { key: 'keyframe_analysis', item: workflowState.keyframe_analysis },
+    { key: 'video_summary', item: workflowState.video_summary },
+    { key: 'subtitle_draft', item: workflowState.subtitle_draft },
+    { key: 'editing_plan', item: workflowState.editing_plan },
+    { key: 'english_title', item: workflowState.english_title },
+    { key: 'tags', item: workflowState.tags },
+  ];
+};
+
+const getWorkflowStatusTone = (status: string) => {
+  switch (status) {
+    case 'completed':
+      return 'bg-emerald-500';
+    case 'in_progress':
+      return 'bg-sky-500';
+    case 'planned':
+      return 'bg-amber-400';
+    case 'error':
+      return 'bg-rose-500';
+    default:
+      return 'bg-slate-300';
+  }
+};
+
+const getWorkflowStatusLabel = (status: string) => {
+  switch (status) {
+    case 'completed':
+      return '已完成';
+    case 'in_progress':
+      return '进行中';
+    case 'planned':
+      return '待确认';
+    case 'error':
+      return '异常';
+    default:
+      return '未执行';
+  }
+};
+
 const CaptionGenerator: React.FC = () => {
   const [video, setVideo] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>('tiktok');
   const [productManual, setProductManual] = useState<string>('');
+  const [sellingPointsOpen, setSellingPointsOpen] = useState<boolean>(false);
   const [draftPrompt, setDraftPrompt] = useState<string>(
     '请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。',
   );
@@ -356,8 +652,10 @@ const CaptionGenerator: React.FC = () => {
   );
   const [mobilePane, setMobilePane] = useState<'chat' | 'workspace'>('chat');
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
+  const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const messages = useMemo(() => {
     const currentMessages = session?.messages ?? [];
@@ -385,7 +683,14 @@ const CaptionGenerator: React.FC = () => {
     () => groupExecutionEvents(executionEvents),
     [executionEvents],
   );
-  const draftPreview = useMemo(() => draftPrompt.trim(), [draftPrompt]);
+  const workflowRows = useMemo(
+    () => getWorkflowRows(session?.editing_state),
+    [session?.editing_state],
+  );
+  const assistantArtifactSections = useMemo(
+    () => buildAssistantArtifactSections(session),
+    [session],
+  );
   const isRunning = session
     ? session.status === 'queued' ||
       session.status === 'planning' ||
@@ -401,7 +706,7 @@ const CaptionGenerator: React.FC = () => {
         session.status === 'planning' ||
         session.status === 'processing')
     ) {
-      return 'SSE 连接 5 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。';
+      return 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。';
     }
     if (session.status === 'completed') {
       if (
@@ -419,18 +724,19 @@ const CaptionGenerator: React.FC = () => {
   }, [session, sseTimedOut]);
   const currentExecutionGroup =
     executionGroups.length > 0 ? executionGroups[executionGroups.length - 1] : null;
-  const showExecutionReplyInChat = isRunning;
+  const showExecutionReplyInChat = Boolean(
+    session &&
+      (isRunning ||
+        session.status === 'awaiting_plan_selection' ||
+        session.planner_stream.trim() ||
+        executionGroups.length),
+  );
   const hasWorkspaceReply = Boolean(
     session?.plan_options?.length ||
     session?.execution_events?.length ||
     session?.agent_trace?.length ||
-    session?.keyframes?.length ||
-    session?.video_summary ||
     session?.execution_plan?.length ||
-    session?.subtitle_draft ||
-    session?.editing_plan ||
-    session?.english_title ||
-    session?.tags?.length,
+    workflowRows.length,
   );
 
   const applyAuthoritativeSession = (nextSession: CaptionAssistantSession) => {
@@ -458,7 +764,6 @@ const CaptionGenerator: React.FC = () => {
           ? nextSession.error_message || '处理失败，请重试'
           : '',
       );
-      upsertSessionHistory(nextSession);
     };
 
     if (nextSession.status === 'completed' || nextSession.status === 'error') {
@@ -469,29 +774,28 @@ const CaptionGenerator: React.FC = () => {
     startTransition(commitSession);
   };
 
+  const reconcileTerminalSession = useCallback(async (sessionId: string) => {
+    try {
+      const latestSession = await getCaptionAssistantSession(sessionId);
+      applyAuthoritativeSession(latestSession);
+    } catch (err) {
+      console.error('Error reconciling terminal caption session:', err);
+    }
+  }, []);
+
   const upsertSessionHistory = (
     nextSession: CaptionAssistantSession,
     fallbackTitle?: string,
   ) => {
-    const titleSource =
-      fallbackTitle ||
-      nextSession.messages.find((message) => message.role === 'user')?.content ||
-      '未命名会话';
-    const title = titleSource.trim().slice(0, 28) || '未命名会话';
-    const subtitle =
-      nextSession.progress_message ||
-      nextSession.video_summary ||
-      nextSession.messages[nextSession.messages.length - 1]?.content ||
-      '等待处理';
-
     setSessionHistory((current) => {
-      const nextItem: SessionListItem = {
-        session_id: nextSession.session_id,
-        title,
-        subtitle: subtitle.trim().slice(0, 42) || '等待处理',
-        updated_at: nextSession.updated_at,
-        status: nextSession.status,
-      };
+      const previousItem = current.find(
+        (item) => item.session_id === nextSession.session_id,
+      );
+      const nextItem = buildSessionHistoryItem(
+        nextSession,
+        fallbackTitle,
+        previousItem,
+      );
       const remaining = current.filter(
         (item) => item.session_id !== nextSession.session_id,
       );
@@ -567,7 +871,7 @@ const CaptionGenerator: React.FC = () => {
         }
         closeSource();
         setSseTimedOut(true);
-        setError('SSE 连接 5 分钟没有新事件，已停止等待并回查后台状态。');
+        setError('SSE 连接 30 分钟没有新事件，已停止等待并回查后台状态。');
         try {
           const latestSession = await getCaptionAssistantSession(session.session_id);
           applyAuthoritativeSession(latestSession);
@@ -583,6 +887,7 @@ const CaptionGenerator: React.FC = () => {
       const nextSession = JSON.parse(raw.data) as CaptionAssistantSession;
       if (nextSession.status === 'completed' || nextSession.status === 'error') {
         closeSource();
+        void reconcileTerminalSession(nextSession.session_id);
       }
       applyAuthoritativeSession(nextSession);
     };
@@ -624,6 +929,10 @@ const CaptionGenerator: React.FC = () => {
           payload.status === 'planning' ||
           payload.status === 'processing',
       );
+      if (payload.status === 'completed' || payload.status === 'error') {
+        closeSource();
+        void reconcileTerminalSession(payload.session_id);
+      }
     };
 
     const handleExecutionEvent = (raw: MessageEvent<string>) => {
@@ -745,16 +1054,46 @@ const CaptionGenerator: React.FC = () => {
         if (isOlderTimestamp(payload.updated_at, current.updated_at)) {
           return current;
         }
-        const nextMessages = [...current.messages];
+        const nextMessages = ensureAssistantMessageSlot(
+          current.messages,
+          payload.message_index,
+          payload.updated_at,
+        );
         if (payload.message_index >= 0 && payload.message_index < nextMessages.length) {
           nextMessages[payload.message_index] = {
             ...nextMessages[payload.message_index],
+            role: 'assistant',
             content: payload.content,
+            created_at:
+              nextMessages[payload.message_index]?.created_at || payload.updated_at,
           };
         }
         return {
           ...current,
           messages: nextMessages,
+          updated_at: payload.updated_at,
+        };
+      });
+    };
+
+    const handlePlannerChunk = (raw: MessageEvent<string>) => {
+      resetInactivityTimer();
+      setSseTimedOut(false);
+      const payload = JSON.parse(raw.data) as {
+        session_id: string;
+        content: string;
+        updated_at: string;
+      };
+      setSession((current) => {
+        if (!current) {
+          return current;
+        }
+        if (isOlderTimestamp(payload.updated_at, current.updated_at)) {
+          return current;
+        }
+        return {
+          ...current,
+          planner_stream: payload.content,
           updated_at: payload.updated_at,
         };
       });
@@ -773,6 +1112,7 @@ const CaptionGenerator: React.FC = () => {
     source.addEventListener('artifact_updated', handleArtifactUpdated as EventListener);
     source.addEventListener('artifact_chunk', handleArtifactChunk as EventListener);
     source.addEventListener('message_chunk', handleMessageChunk as EventListener);
+    source.addEventListener('planner_chunk', handlePlannerChunk as EventListener);
     source.addEventListener('ping', handlePing as EventListener);
     source.onerror = async () => {
       console.error('Caption SSE connection interrupted.');
@@ -807,9 +1147,40 @@ const CaptionGenerator: React.FC = () => {
     thread.scrollTop = thread.scrollHeight;
   }, [messages.length, progressText, session?.updated_at]);
 
+  useEffect(() => {
+    if (!session?.session_id) {
+      return;
+    }
+    if (session.status !== 'completed' && session.status !== 'error') {
+      return;
+    }
+    const hasAssistantReply = session.messages.some(
+      (message) => message.role === 'assistant' && message.content.trim(),
+    );
+    if (hasAssistantReply) {
+      return;
+    }
+    void reconcileTerminalSession(session.session_id);
+  }, [session, reconcileTerminalSession]);
+
+  useEffect(() => {
+    if (!video) {
+      setVideoPreviewUrl(null);
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(video);
+    setVideoPreviewUrl(objectUrl);
+
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [video]);
+
   const handleVideoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const nextFile = event.target.files?.[0] ?? null;
     setVideo(nextFile);
+    event.target.value = '';
   };
 
   const resetSession = () => {
@@ -817,7 +1188,9 @@ const CaptionGenerator: React.FC = () => {
     eventSourceRef.current = null;
     setSession(null);
     setVideo(null);
+    setVideoPreviewUrl(null);
     setProductManual('');
+    setSellingPointsOpen(false);
     setDraftPrompt('请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。');
     setComposerMode('initial');
     setSelectedPlanIds([]);
@@ -845,8 +1218,13 @@ const CaptionGenerator: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const clearUploadedVideo = useCallback(() => {
+    setVideo(null);
+    setVideoPreviewUrl(null);
+  }, []);
+
+  const submitPrompt = async (promptValue: string) => {
+    const normalizedPrompt = promptValue.trim();
 
     if (composerMode === 'initial') {
       if (!video) {
@@ -854,7 +1232,7 @@ const CaptionGenerator: React.FC = () => {
         return;
       }
 
-      if (!draftPreview) {
+      if (!normalizedPrompt) {
         setError('请输入你的首轮创作要求');
         return;
       }
@@ -867,7 +1245,7 @@ const CaptionGenerator: React.FC = () => {
         const response = await createCaptionAssistantSession(
           video,
           platform,
-          draftPreview,
+          normalizedPrompt,
           productManual || null,
         );
 
@@ -877,7 +1255,7 @@ const CaptionGenerator: React.FC = () => {
           setComposerMode('followup');
           setMobilePane('chat');
         });
-        upsertSessionHistory(response, draftPreview);
+        upsertSessionHistory(response, normalizedPrompt);
       } catch (err) {
         setLoading(false);
         setError('初始化对话助手失败，请检查后端接口和模型配置');
@@ -892,7 +1270,7 @@ const CaptionGenerator: React.FC = () => {
       return;
     }
 
-    if (!session || !draftPreview) {
+    if (!session || !normalizedPrompt) {
       return;
     }
 
@@ -903,7 +1281,7 @@ const CaptionGenerator: React.FC = () => {
     try {
       const response = await continueCaptionAssistantSession(
         session.session_id,
-        draftPreview,
+        normalizedPrompt,
       );
 
       startTransition(() => {
@@ -911,7 +1289,6 @@ const CaptionGenerator: React.FC = () => {
         setDraftPrompt('');
         setMobilePane('chat');
       });
-      upsertSessionHistory(response);
     } catch (err) {
       setLoading(false);
       setError('继续修改失败，请重试');
@@ -956,7 +1333,6 @@ const CaptionGenerator: React.FC = () => {
         setSession(response);
         setMobilePane('workspace');
       });
-      upsertSessionHistory(response);
     } catch (err) {
       setLoading(false);
       setError('确认执行计划失败，请重试');
@@ -973,105 +1349,125 @@ const CaptionGenerator: React.FC = () => {
     '未命名会话';
 
   return (
-    <div className="relative flex h-full min-h-0 overflow-hidden bg-[linear-gradient(180deg,#eef4ff_0%,#fbfdff_42%,#f6efe6_100%)] p-2 md:p-2.5">
-      <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-[-8%] top-[-12%] h-64 w-64 rounded-full bg-sky-300/25 blur-3xl" />
-        <div className="absolute right-[-6%] top-[12%] h-72 w-72 rounded-full bg-amber-300/20 blur-3xl" />
-        <div className="absolute bottom-[-10%] left-[34%] h-64 w-64 rounded-full bg-emerald-200/20 blur-3xl" />
-      </div>
-
-      <div className="relative mx-auto flex h-full min-h-0 w-full max-w-[1400px] flex-col overflow-hidden rounded-[24px] border border-white/60 bg-white/35 shadow-[0_24px_72px_rgba(15,23,42,0.10)] backdrop-blur-2xl">
-        <div className="grid flex-1 gap-2 overflow-hidden p-2 xl:grid-cols-[252px_minmax(500px,1fr)_360px] 2xl:grid-cols-[252px_minmax(540px,1fr)_376px]">
-          <aside className="min-h-0 overflow-hidden">
+    <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
+      <div
+        className={`grid h-full min-h-0 ${
+          historySidebarCollapsed
+            ? 'lg:grid-cols-[72px_minmax(0,1fr)_368px]'
+            : 'lg:grid-cols-[272px_minmax(0,1fr)_368px]'
+        }`}
+      >
+          <aside className="hidden min-h-0 overflow-hidden bg-[#0f0f0f] lg:block">
             <Panel
               title=""
-              className="h-full overflow-hidden"
+              className="h-full overflow-hidden border-0 bg-[#0f0f0f]"
               bodyClassName="flex min-h-0 flex-1 flex-col"
               hideHeader
             >
-              <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                    <Clapperboard className="h-3 w-3" />
-                    Caption Studio
+              {historySidebarCollapsed ? (
+                <>
+                  <div className="flex shrink-0 flex-col items-center">
+                    <button
+                      type="button"
+                      onClick={() => setHistorySidebarCollapsed(false)}
+                      className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-800 bg-[#171717] text-slate-300 transition hover:border-slate-700 hover:bg-[#1b1b1b] hover:text-white"
+                      aria-label="展开历史侧栏"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
                   </div>
-                  <h1 className="mt-1 text-[17px] font-semibold text-slate-950">
-                    桌面工作台
-                  </h1>
-                </div>
-                <Link
-                  to="/"
-                  className="shrink-0 rounded-full border border-slate-200 bg-white/85 px-2.5 py-1.5 text-[11px] font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-950"
-                >
-                  返回
-                </Link>
-              </div>
-
-              <Button
-                type="button"
-                variant="outline"
-                className="mb-3 w-full"
-                onClick={resetSession}
-              >
-                <RefreshCcw className="mr-2 h-4 w-4" />
-                新建任务
-              </Button>
-
-              {/* <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-500">
-                历史会话单独滚动，右侧工作区不会因为会话列表过长而压缩。
-              </div> */}
-
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div className="space-y-2">
-                  {sessionHistory.length ? (
-                    sessionHistory.map((item) => {
-                      const isActive = session?.session_id === item.session_id;
-                      return (
-                        <button
-                          key={item.session_id}
-                          type="button"
-                          onClick={() => void openSessionFromHistory(item.session_id)}
-                          className={`w-full rounded-2xl border px-3 py-3 text-left transition ${isActive
-                              ? 'border-sky-300 bg-sky-50 shadow-sm'
-                              : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-white'
-                            }`}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="truncate text-sm font-medium text-slate-900">
-                              {item.title}
-                            </p>
-                            <span className="rounded-full bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                              {item.status}
-                            </span>
-                          </div>
-                          <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">
-                            {item.subtitle}
-                          </p>
-                          <p className="mt-2 text-[11px] text-slate-400">
-                            {formatTimestamp(item.updated_at)}
-                          </p>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-3.5 py-4 text-[13px] leading-5 text-slate-500">
-                      还没有历史会话。创建首轮任务后，后续所有版本都会沉淀在这里。
+                </>
+              ) : (
+                <>
+                  <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                        <Clapperboard className="h-3 w-3" />
+                        Caption Studio
+                      </div>
+                      <h1 className="mt-1 text-[17px] font-semibold text-slate-100">
+                        桌面工作台
+                      </h1>
                     </div>
-                  )}
-                </div>
-              </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setHistorySidebarCollapsed(true)}
+                        className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-800 bg-[#171717] text-slate-300 transition hover:border-slate-700 hover:bg-[#1b1b1b] hover:text-white"
+                        aria-label="收起历史侧栏"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <Link
+                        to="/"
+                        className="shrink-0 rounded-full border border-slate-800 bg-[#171717] px-2.5 py-1.5 text-[11px] font-medium text-slate-300 transition hover:border-slate-700 hover:text-white"
+                      >
+                        返回
+                      </Link>
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mb-3 w-full border-slate-800 bg-[#171717] text-slate-200 hover:border-slate-700 hover:bg-[#1b1b1b] hover:text-white"
+                    onClick={resetSession}
+                  >
+                    <RefreshCcw className="mr-2 h-4 w-4" />
+                    新建任务
+                  </Button>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="space-y-2">
+                      {sessionHistory.length ? (
+                        sessionHistory.map((item) => {
+                          const isActive = session?.session_id === item.session_id;
+                          return (
+                            <button
+                              key={item.session_id}
+                              type="button"
+                              onClick={() => void openSessionFromHistory(item.session_id)}
+                              className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                                isActive
+                                  ? 'border-sky-500/40 bg-sky-500/10 shadow-sm'
+                                  : 'border-slate-800 bg-[#171717] hover:border-slate-700 hover:bg-[#1b1b1b]'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="truncate text-sm font-medium text-slate-100">
+                                  {item.title}
+                                </p>
+                                <span className="shrink-0 text-[11px] text-slate-500">
+                                  {formatTimestamp(item.updated_at)}
+                                </span>
+                              </div>
+                              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">
+                                {item.subtitle}
+                              </p>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="rounded-[18px] border border-dashed border-slate-800 bg-[#151515] px-3.5 py-4 text-[13px] leading-5 text-slate-400">
+                          还没有历史会话。创建首轮任务后，后续所有版本都会沉淀在这里。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </Panel>
           </aside>
 
-          <section className="flex min-h-0 flex-col gap-3 overflow-visible xl:overflow-hidden">
-            <div className="flex items-center gap-2 xl:hidden">
+          <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
+            <div className="flex items-center gap-2 border-b border-slate-800 bg-[#0f0f0f] px-4 py-3 lg:hidden">
               <button
                 type="button"
                 onClick={() => setMobilePane('chat')}
                 className={`inline-flex h-8 flex-1 items-center justify-center rounded-full border text-[12px] font-medium transition ${
                   mobilePane === 'chat'
-                    ? 'border-sky-300 bg-sky-50 text-sky-700'
-                    : 'border-slate-200 bg-white/80 text-slate-600'
+                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                    : 'border-slate-800 bg-[#171717] text-slate-400'
                 }`}
               >
                 聊天记录
@@ -1081,53 +1477,64 @@ const CaptionGenerator: React.FC = () => {
                 onClick={() => setMobilePane('workspace')}
                 className={`inline-flex h-8 flex-1 items-center justify-center rounded-full border text-[12px] font-medium transition ${
                   mobilePane === 'workspace'
-                    ? 'border-sky-300 bg-sky-50 text-sky-700'
-                    : 'border-slate-200 bg-white/80 text-slate-600'
+                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                    : 'border-slate-800 bg-[#171717] text-slate-400'
                 }`}
               >
                 执行工作区
               </button>
             </div>
 
-            <Panel
-              title="对话记录"
-              eyebrow="Conversation"
-              className={`min-h-0 flex-1 overflow-hidden ${mobilePane === 'workspace' ? 'hidden xl:block' : ''}`}
-              bodyClassName="flex min-h-0 flex-1 flex-col"
+            <div
+              className={`flex min-h-0 flex-1 flex-col ${mobilePane === 'workspace' ? 'hidden lg:flex' : ''}`}
             >
-              <div ref={threadRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]">
-                <div className="flex min-h-full flex-col gap-2.5 pb-5">
+              <div
+                ref={threadRef}
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#090909] px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              >
+                <div className="flex min-h-full flex-col gap-3 pb-6">
                   {!session ? (
-                    <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-200 bg-slate-50/70 px-3.5 py-4 text-center">
+                    <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
                       <div className="max-w-lg">
-                        <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-400">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
                           Waiting For Session
                         </p>
-                        <h3 className="mt-2 text-[15px] font-semibold tracking-[-0.04em] text-slate-900">
+                        <h3 className="mt-2 text-[15px] font-semibold tracking-[-0.04em] text-slate-100">
                           先在下方创建你的第一轮任务
                         </h3>
-                        <p className="mt-2 text-[12px] leading-5 text-slate-600">
+                        <p className="mt-2 text-[12px] leading-5 text-slate-400">
                           提交后，这里会持续显示用户要求、助手回复和后续每一轮改稿指令。
                         </p>
                       </div>
                     </div>
                   ) : (
                     messages.map((message, index) => (
-                      <ChatBubble
-                        key={`${message.created_at}-${index}`}
-                        message={message}
-                      />
+                      <div key={`${message.created_at}-${index}`} className="space-y-2.5">
+                        {message.role === 'assistant' && index === messages.length - 1 ? (
+                          <AssistantTurnCard
+                            message={message}
+                            status={session?.status}
+                            isRunning={isRunning}
+                            progressText={progressText}
+                            plannerStream={session?.planner_stream ?? ''}
+                            executionGroups={executionGroups}
+                            artifactSections={assistantArtifactSections}
+                          />
+                        ) : (
+                          <ChatBubble message={message} />
+                        )}
+                      </div>
                     ))
                   )}
 
-                  {showExecutionReplyInChat ? (
+                  {showExecutionReplyInChat && messages[messages.length - 1]?.role !== 'assistant' ? (
                     <article className="flex w-full items-start gap-2.5 justify-start pr-16">
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white shadow-sm">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
                         <Bot className="h-3 w-3" />
                       </div>
                       <details
                         open
-                        className="group w-fit min-w-0 max-w-[min(72%,34rem)] rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-[0_10px_24px_rgba(15,23,42,0.06)]"
+                        className="group w-fit min-w-0 max-w-[min(72%,34rem)] rounded-2xl border border-slate-800 bg-[#161616] text-slate-300 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
                       >
                         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
                           <div className="min-w-0">
@@ -1137,29 +1544,45 @@ const CaptionGenerator: React.FC = () => {
                                   isRunning ? 'bg-sky-500' : 'bg-emerald-500'
                                 }`}
                               />
-                              <p className="truncate text-[12px] font-medium text-slate-900">
+                              <p className="truncate text-[12px] font-medium text-slate-100">
                                 Assistant 执行回复
                               </p>
                             </div>
-                            <p className="mt-1 break-words text-[11px] leading-4 text-slate-500">
-                              {isRunning
-                                ? progressText
-                                : `${executionGroups.length} 个工具步骤，点击展开查看完整执行树`}
+                            <p className="mt-1 break-words text-[11px] leading-4 text-slate-400">
+                              {session?.status === 'awaiting_plan_selection'
+                                ? '计划已生成，等待你确认后执行'
+                                : isRunning
+                                  ? progressText
+                                  : `${executionGroups.length} 个工具步骤，点击展开查看完整执行树`}
                             </p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
-                              {isRunning ? '进行中' : '已完成'}
+                            <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                              {session?.status === 'awaiting_plan_selection'
+                                ? '待确认'
+                                : isRunning
+                                  ? '进行中'
+                                  : '已完成'}
                             </span>
-                            <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition group-open:rotate-180" />
+                            <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
                           </div>
                         </summary>
-                        <div className="border-t border-slate-200 px-3 py-2.5">
+                        <div className="border-t border-slate-800 px-3 py-2.5">
+                          {session?.planner_stream?.trim() ? (
+                            <div className="mb-2.5 rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
+                              <p className="mb-1 text-[11px] font-medium text-slate-300">
+                                Agent 规划输出
+                              </p>
+                              <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+                                {session.planner_stream}
+                              </p>
+                            </div>
+                          ) : null}
                           {isRunning ? (
-                            <div className="mb-2.5 rounded-[14px] border border-sky-100 bg-sky-50/70 px-3 py-2">
+                            <div className="mb-2.5 rounded-[14px] border border-sky-500/20 bg-sky-500/10 px-3 py-2">
                               <div className="flex items-center gap-2">
                                 <span className="h-2 w-2 animate-pulse rounded-full bg-sky-500" />
-                                <p className="text-[12px] font-medium text-slate-800">
+                                <p className="text-[12px] font-medium text-slate-100">
                                   {progressText}
                                 </p>
                               </div>
@@ -1174,7 +1597,7 @@ const CaptionGenerator: React.FC = () => {
                                 <details
                                   key={`${group.parent.created_at}-${group.parent.title}-${index}`}
                                   open={index === executionGroups.length - 1}
-                                  className="group rounded-[14px] border border-slate-200 bg-slate-50/85"
+                                  className="group rounded-[14px] border border-slate-800 bg-[#1b1b1b]"
                                 >
                                   <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
                                     <div className="min-w-0">
@@ -1184,44 +1607,44 @@ const CaptionGenerator: React.FC = () => {
                                             completed ? 'bg-emerald-500' : 'bg-sky-500'
                                           }`}
                                         />
-                                        <p className="truncate text-[12px] font-medium text-slate-900">
+                                        <p className="truncate text-[12px] font-medium text-slate-100">
                                           {group.parent.title}
                                         </p>
                                       </div>
-                                      <p className="mt-1 break-words text-[11px] leading-4 text-slate-500">
+                                      <p className="mt-1 break-words text-[11px] leading-4 text-slate-400">
                                         {group.parent.detail}
                                       </p>
                                     </div>
                                     <div className="flex shrink-0 items-center gap-2">
-                                      <span className="text-[10px] uppercase tracking-[0.18em] text-slate-400">
+                                      <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
                                         {completed ? '已完成' : '进行中'}
                                       </span>
-                                      <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition group-open:rotate-180" />
+                                      <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
                                     </div>
                                   </summary>
-                                  <div className="border-t border-slate-200 px-3 py-2.5">
+                                  <div className="border-t border-slate-800 px-3 py-2.5">
                                     <div className="space-y-2">
                                       {group.children.map((item, childIndex) => (
                                         <details
                                           key={`${item.created_at}-${item.kind}-${childIndex}`}
                                           open={item.kind === 'tool_completed' || childIndex === group.children.length - 1}
-                                          className="group rounded-[12px] border border-slate-100 bg-white"
+                                          className="group rounded-[12px] border border-slate-800 bg-[#121212]"
                                         >
                                           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2">
                                             <div className="min-w-0">
-                                              <p className="truncate text-[11px] font-medium text-slate-700">
+                                              <p className="truncate text-[11px] font-medium text-slate-200">
                                                 {item.title}
                                               </p>
                                             </div>
                                             <div className="flex shrink-0 items-center gap-2">
-                                              <span className="text-[10px] text-slate-400">
+                                              <span className="text-[10px] text-slate-500">
                                                 {formatTimestamp(item.created_at)}
                                               </span>
-                                              <ChevronDown className="h-3 w-3 text-slate-400 transition group-open:rotate-180" />
+                                              <ChevronDown className="h-3 w-3 text-slate-500 transition group-open:rotate-180" />
                                             </div>
                                           </summary>
-                                          <div className="border-t border-slate-100 px-3 py-2">
-                                            <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-600">
+                                          <div className="border-t border-slate-800 px-3 py-2">
+                                            <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
                                               {item.detail}
                                             </p>
                                           </div>
@@ -1242,131 +1665,91 @@ const CaptionGenerator: React.FC = () => {
                 </div>
               </div>
 
-            </Panel>
+              <div
+                className={`shrink-0 bg-[#090909] px-6 pb-5 pt-4 ${mobilePane === 'workspace' ? 'hidden lg:block' : ''}`}
+              >
+              <ChatComposer
+                className="mx-auto"
+                value={draftPrompt}
+                onChange={setDraftPrompt}
+                onSubmit={(nextValue) => {
+                  void submitPrompt(nextValue);
+                }}
+                disabled={isRunning || session?.status === 'awaiting_plan_selection'}
+                platform={platform}
+                platformOptions={PLATFORM_OPTIONS}
+                onPlatformChange={setPlatform}
+                onUploadClick={() => {
+                  if (composerMode !== 'initial') {
+                    return;
+                  }
+                  uploadInputRef.current?.click();
+                }}
+                uploadPreviewUrl={composerMode === 'initial' ? videoPreviewUrl : null}
+                uploadPreviewName={composerMode === 'initial' ? video?.name ?? null : null}
+                onClearUploadPreview={
+                  composerMode === 'initial' ? clearUploadedVideo : undefined
+                }
+                sellingPointsValue={productManual}
+                onSellingPointsChange={setProductManual}
+                sellingPointsOpen={sellingPointsOpen}
+                onSellingPointsToggle={() => setSellingPointsOpen((current) => !current)}
+                toolsDisabled={composerMode !== 'initial' || isRunning}
+                placeholder={
+                  composerMode === 'initial'
+                    ? '有问题，尽管问'
+                    : session?.status === 'awaiting_plan_selection'
+                      ? '请先在右侧确认 Agent 执行计划。'
+                      : '有问题，尽管问'
+                }
+              />
 
-            <form
-              onSubmit={handleSubmit}
-              className={`shrink-0 space-y-2.5 rounded-[22px] border border-white/80 bg-white/92 px-3.5 py-3 shadow-[0_16px_42px_rgba(15,23,42,0.10)] backdrop-blur-2xl ${mobilePane === 'workspace' ? 'hidden xl:block' : ''}`}
-            >
-                {composerMode === 'initial' ? (
-                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                    <label className="group inline-flex min-w-[220px] max-w-full cursor-pointer items-center gap-2 rounded-full border border-dashed border-slate-300 bg-white px-3 py-2 transition hover:border-sky-400 hover:bg-sky-50">
-                      <Film className="h-3.5 w-3.5 text-sky-600" />
-                      <span className="truncate text-[12px] text-slate-700">
-                        {video ? video.name : '上传素材视频'}
-                      </span>
-                      <input
-                        name="video"
-                        type="file"
-                        accept="video/*"
-                        className="sr-only"
-                        onChange={handleVideoChange}
-                      />
-                    </label>
-
-                    <label
-                      htmlFor="platform-main"
-                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2"
-                    >
-                      <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-slate-400">
-                        平台
-                      </span>
-                      <select
-                        id="platform-main"
-                        value={platform}
-                        onChange={(event) => setPlatform(event.target.value)}
-                        className="bg-transparent text-[12px] font-medium text-slate-700 outline-none"
-                      >
-                        {PLATFORM_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <input
-                      value={productManual}
-                      onChange={(event) => setProductManual(event.target.value)}
-                      className="min-w-[220px] flex-1 rounded-full border border-slate-200 bg-white px-3.5 py-2 text-[12px] text-slate-700 outline-none transition focus:border-sky-400"
-                      placeholder="补充卖点、规格参数、品牌语气、禁用词…"
-                    />
-                  </div>
-                ) : null}
-
-                <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-3 py-2.5 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
-                  <div className="flex items-end gap-3">
-                    <textarea
-                      value={draftPrompt}
-                      onChange={(event) => setDraftPrompt(event.target.value)}
-                      rows={2}
-                      disabled={isRunning || session?.status === 'awaiting_plan_selection'}
-                      className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-slate-800 outline-none placeholder:text-slate-400"
-                      placeholder={
-                        composerMode === 'initial'
-                          ? '输入首轮创作要求，例如：25 秒 TikTok 版、前三秒强钩子、偏真人口播…'
-                          : session?.status === 'awaiting_plan_selection'
-                            ? '请先在右侧确认 Agent 执行计划。'
-                          : '继续告诉助手要怎么改，例如：压缩到 20 秒、口语化一点、前三秒钩子更猛…'
-                      }
-                    />
-                    <Button
-                      type="submit"
-                      size="icon"
-                      aria-label="发送消息"
-                      disabled={isRunning || !draftPreview || session?.status === 'awaiting_plan_selection'}
-                      className="h-8 w-8 shrink-0 rounded-full"
-                    >
-                      <ArrowUp className="h-3 w-3" />
-                    </Button>
-                  </div>
+              {error ? (
+                <div
+                  className="mx-auto mt-3 w-full max-w-[960px] rounded-2xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-[12px] text-rose-200"
+                  aria-live="polite"
+                >
+                  {error}
                 </div>
-
-                {error ? (
-                  <div
-                    className="rounded-[16px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-[12px] text-rose-700"
-                    aria-live="polite"
-                  >
-                    {error}
-                  </div>
-                ) : null}
-            </form>
+              ) : null}
+            </div>
+            </div>
           </section>
 
           <aside
-            className={`min-h-0 overflow-hidden ${mobilePane === 'chat' ? 'hidden xl:block' : ''}`}
+            className={`min-h-0 overflow-hidden bg-[#0f0f0f] ${mobilePane === 'chat' ? 'hidden lg:block' : ''}`}
           >
             <Panel
               title=""
-              className="h-full overflow-hidden"
+              className="h-full overflow-hidden border-0 bg-[#0f0f0f]"
               bodyClassName="flex min-h-0 flex-1 flex-col gap-2 p-0"
               hideHeader
             >
               <div className="flex h-full min-h-0 flex-col px-3.5 py-3">
-                <div className="shrink-0 rounded-[18px] border border-slate-200 bg-slate-50/85 px-3 py-2">
+                <div className="shrink-0 rounded-[18px] border border-slate-800 bg-[#171717] px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#111111] text-slate-300 shadow-sm">
                         <Sparkles className="h-3.5 w-3.5" />
                       </div>
                       <div className="min-w-0">
-                        <p className="truncate text-[13px] font-semibold text-slate-900">
+                        <p className="truncate text-[13px] font-semibold text-slate-100">
                           {session ? activeSessionTitle : '执行工作区'}
                         </p>
                       </div>
                     </div>
-                    <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
+                    <span className="shrink-0 rounded-full border border-slate-700 bg-[#111111] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-400">
                       {session?.status || 'idle'}
                     </span>
                   </div>
-                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-slate-600" aria-live="polite">
+                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-slate-400" aria-live="polite">
                     {session
                       ? progressText
                       : '创建会话后，这里会先显示 Agent 计划，再展示已执行的分析结果与创意产物。'}
                   </p>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto pt-2 pr-1">
+                <div className="min-h-0 flex-1 overflow-y-auto pt-2 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {session && hasWorkspaceReply ? (
                   <div className="space-y-2.5">
                     {planOptions.length ? (
@@ -1388,8 +1771,8 @@ const CaptionGenerator: React.FC = () => {
                                 key={option.id}
                                 className={`flex cursor-pointer items-start gap-2.5 rounded-[16px] border px-2.5 py-2.5 ${
                                   selectedPlanIds.includes(option.id)
-                                    ? 'border-sky-300 bg-sky-50'
-                                    : 'border-slate-200 bg-white'
+                                    ? 'border-sky-500/40 bg-sky-500/10'
+                                    : 'border-slate-800 bg-[#111111]'
                                 }`}
                               >
                                 <input
@@ -1401,16 +1784,16 @@ const CaptionGenerator: React.FC = () => {
                                 />
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[13px] font-medium text-slate-900">
+                                    <span className="text-[13px] font-medium text-slate-100">
                                       {option.title}
                                     </span>
                                     {option.required ? (
-                                      <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[9px] uppercase tracking-[0.18em] text-white">
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] uppercase tracking-[0.18em] text-black">
                                         必选
                                       </span>
                                     ) : null}
                                   </div>
-                                  <p className="mt-1 text-[12px] leading-5 text-slate-600">
+                                  <p className="mt-1 text-[12px] leading-5 text-slate-400">
                                     {option.description}
                                   </p>
                                 </div>
@@ -1428,11 +1811,11 @@ const CaptionGenerator: React.FC = () => {
                         defaultOpen
                       >
                         <div className="space-y-2">
-                          <div className="rounded-[16px] border border-slate-200 bg-white px-3 py-2.5">
-                            <p className="text-[13px] font-medium text-slate-900">
+                          <div className="rounded-[16px] border border-slate-800 bg-[#111111] px-3 py-2.5">
+                            <p className="text-[13px] font-medium text-slate-100">
                               {currentExecutionGroup.parent.title}
                             </p>
-                            <p className="mt-1.5 text-[12px] leading-5 text-slate-600">
+                            <p className="mt-1.5 text-[12px] leading-5 text-slate-400">
                               {currentExecutionGroup.parent.detail}
                             </p>
                           </div>
@@ -1441,12 +1824,12 @@ const CaptionGenerator: React.FC = () => {
                               {currentExecutionGroup.children.slice(-3).map((item, index) => (
                                 <div
                                   key={`${item.created_at}-${index}`}
-                                  className="rounded-[14px] border border-slate-100 bg-slate-50 px-3 py-2"
+                                  className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2"
                                 >
-                                  <p className="text-[11px] font-medium text-slate-700">
+                                  <p className="text-[11px] font-medium text-slate-200">
                                     {item.title}
                                   </p>
-                                  <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                  <p className="mt-1 text-[11px] leading-4 text-slate-400">
                                     {item.detail}
                                   </p>
                                 </div>
@@ -1458,77 +1841,60 @@ const CaptionGenerator: React.FC = () => {
                     ) : null}
 
                     <WorkflowStepCard
-                      title="当前产物概览"
+                      title="剪辑状态"
                       status={session.status === 'completed' ? 'completed' : 'active'}
                       defaultOpen
                     >
-                      <div className="space-y-2 text-[12px] leading-5 text-slate-600">
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          关键帧：{session.keyframes.length} 张
+                      <div className="space-y-2 text-[12px] leading-5 text-slate-400">
+                        <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
+                          <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                            Request
+                          </div>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
+                            {session.editing_state?.request_summary || '暂无'}
+                          </p>
                         </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          关键帧理解：{session.frame_analyses.length} 条
-                        </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          视频摘要：{session.video_summary ? '已生成' : '未生成'}
-                        </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          字幕草稿：{session.subtitle_draft ? '已生成' : '未生成'}
-                        </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          剪辑方案：{session.editing_plan ? '已生成' : '未生成'}
-                        </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          英文标题：{session.english_title ? '已生成' : '未生成'}
-                        </div>
-                        <div className="rounded-[14px] border border-slate-100 bg-white px-3 py-2">
-                          标签：{session.tags.length ? `${session.tags.length} 个` : '未生成'}
-                        </div>
+                        {workflowRows.map(({ key, item }) => (
+                          <div
+                            key={key}
+                            className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className={`h-2 w-2 rounded-full ${getWorkflowStatusTone(item.status)}`}
+                                />
+                                <p className="truncate text-[12px] font-medium text-slate-200">
+                                  {item.label}
+                                </p>
+                              </div>
+                              <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                {getWorkflowStatusLabel(item.status)}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                              {item.detail || '暂无状态说明'}
+                            </p>
+                            {item.needs_refresh ? (
+                              <p className="mt-1 text-[11px] text-amber-600">
+                                已标记为需要刷新
+                              </p>
+                            ) : null}
+                          </div>
+                        ))}
                       </div>
                     </WorkflowStepCard>
-
-                    {session.subtitle_draft ? (
-                      <ArtifactCard title="字幕草稿" content={session.subtitle_draft} />
-                    ) : null}
-
-                    {session.editing_plan ? (
-                      <ArtifactCard title="剪辑方案" content={session.editing_plan} />
-                    ) : null}
-
-                    {session.video_summary ? (
-                      <ArtifactCard
-                        title="视频摘要"
-                        content={session.video_summary}
-                        defaultOpen={false}
-                      />
-                    ) : null}
-
-                    {session.english_title ? (
-                      <ArtifactCard
-                        title="英文标题"
-                        content={session.english_title}
-                        defaultOpen={false}
-                      />
-                    ) : null}
-
-                    {session.tags.length ? (
-                      <ArtifactCard
-                        title="标签"
-                        content={session.tags.map((tag) => `- ${tag}`).join('\n')}
-                        defaultOpen={false}
-                      />
-                    ) : null}
                   </div>
                 ) : (
-                  <div className="rounded-[18px] border border-dashed border-slate-200 bg-white px-4 py-5 text-[13px] leading-5 text-slate-500">
-                    Agent 的计划、关键帧结果和创意产物会在这里累计展开。
+                  <div className="rounded-[18px] border border-dashed border-slate-800 bg-[#151515] px-4 py-5 text-[13px] leading-5 text-slate-400">
+                    Agent 的计划、步骤状态和执行进度会在这里持续更新。
                   </div>
                 )}
                 </div>
 
                 {session?.status === 'awaiting_plan_selection' ? (
                   <div className="shrink-0 pt-2">
-                    <div className="rounded-[16px] border border-slate-200 bg-white/95 p-2.5 backdrop-blur">
+                    <div className="rounded-[16px] border border-slate-800 bg-[#171717]/95 p-2.5 backdrop-blur">
                       <Button
                         type="button"
                         onClick={handleConfirmPlan}
@@ -1544,7 +1910,6 @@ const CaptionGenerator: React.FC = () => {
             </Panel>
           </aside>
         </div>
-      </div>
 
       {selectedKeyframe ? (
         <div
@@ -1552,7 +1917,7 @@ const CaptionGenerator: React.FC = () => {
           onClick={() => setSelectedKeyframe(null)}
         >
           <div
-            className="max-h-[90vh] max-w-4xl overflow-hidden rounded-[28px] border border-white/20 bg-white shadow-[0_30px_100px_rgba(15,23,42,0.35)]"
+            className="max-h-[90vh] max-w-4xl overflow-hidden rounded-[28px] border border-slate-700 bg-[#111111] shadow-[0_30px_100px_rgba(0,0,0,0.45)]"
             onClick={(event) => event.stopPropagation()}
           >
             <img
@@ -1560,7 +1925,7 @@ const CaptionGenerator: React.FC = () => {
               alt="关键帧预览"
               className="max-h-[78vh] w-full object-contain bg-slate-950"
             />
-            <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-sm text-slate-600">
+            <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-sm text-slate-300">
               <div>
                 预览图 · {formatSeconds(selectedKeyframe.timestamp_seconds)} ·{' '}
                 {selectedKeyframe.source}
@@ -1568,7 +1933,7 @@ const CaptionGenerator: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setSelectedKeyframe(null)}
-                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300"
+                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-600"
               >
                 关闭
               </button>
@@ -1576,6 +1941,16 @@ const CaptionGenerator: React.FC = () => {
           </div>
         </div>
       ) : null}
+
+      <input
+        ref={uploadInputRef}
+        name="video"
+        type="file"
+        accept="video/*"
+        className="sr-only"
+        onChange={handleVideoChange}
+      />
+
     </div>
   );
 };
