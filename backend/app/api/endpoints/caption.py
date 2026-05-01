@@ -18,6 +18,10 @@ class CaptionFollowUpRequest(BaseModel):
     prompt: str
 
 
+class CaptionPlanSelectionRequest(BaseModel):
+    selected_plan_ids: list[str]
+
+
 async def _persist_upload(video: UploadFile) -> str:
     ensure_directory(settings.upload_dir)
     original_name = video.filename or "uploaded_video.mp4"
@@ -49,7 +53,13 @@ async def generate_caption(
         product_manual=product_manual,
         user_prompt="请先生成字幕初稿，并给出适合投放短视频的剪辑方案。",
     )
-    completed = await caption_assistant.wait_for_completion(result["session_id"])
+    planned = await caption_assistant.wait_for_completion(result["session_id"])
+    if planned["status"] == "awaiting_plan_selection":
+        planned = await caption_assistant.confirm_execution_plan(
+            planned["session_id"],
+            ["keyframe_analysis", "subtitle_draft", "editing_plan"],
+        )
+    completed = await caption_assistant.wait_for_completion(planned["session_id"])
     return {
         "caption": completed["subtitle_draft"],
         "editing_plan": completed["editing_plan"],
@@ -112,6 +122,22 @@ async def continue_caption_session(session_id: str, request: CaptionFollowUpRequ
     """
     try:
         return await caption_assistant.continue_session(session_id, request.prompt)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/assistant/session/{session_id}/plan")
+async def confirm_caption_plan(session_id: str, request: CaptionPlanSelectionRequest):
+    """
+    确认首轮 Agent 执行计划。
+    """
+    try:
+        return await caption_assistant.confirm_execution_plan(
+            session_id,
+            request.selected_plan_ids,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

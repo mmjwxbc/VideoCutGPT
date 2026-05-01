@@ -22,6 +22,30 @@ export interface ChatMessage {
   created_at: string;
 }
 
+export interface ExecutionPlanOption {
+  id: string;
+  title: string;
+  description: string;
+  required: boolean;
+  selected: boolean;
+}
+
+export interface AgentTraceItem {
+  thought: string;
+  action: string;
+  observation: string;
+  created_at: string;
+}
+
+export interface ExecutionEventItem {
+  kind: string;
+  title: string;
+  detail: string;
+  tool: string;
+  artifact: string;
+  created_at: string;
+}
+
 export interface CaptionAssistantSession {
   session_id: string;
   platform: string;
@@ -29,12 +53,23 @@ export interface CaptionAssistantSession {
   video_summary: string;
   frame_analyses: string[];
   execution_plan: string[];
+  plan_options: ExecutionPlanOption[];
+  selected_plan_ids: string[];
+  agent_trace: AgentTraceItem[];
+  execution_events: ExecutionEventItem[];
   subtitle_draft: string;
   editing_plan: string;
   english_title: string;
   tags: string[];
   messages: ChatMessage[];
-  status: 'idle' | 'queued' | 'processing' | 'completed' | 'error';
+  status:
+    | 'idle'
+    | 'queued'
+    | 'planning'
+    | 'awaiting_plan_selection'
+    | 'processing'
+    | 'completed'
+    | 'error';
   progress_message: string;
   error_message: string;
   created_at: string;
