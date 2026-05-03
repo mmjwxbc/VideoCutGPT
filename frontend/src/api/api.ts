@@ -66,18 +66,6 @@ export const continueCaptionAssistantSession = async (
   return response.data;
 };
 
-export const confirmCaptionAssistantPlan = async (
-  sessionId: string,
-  selectedPlanIds: string[],
-): Promise<CaptionAssistantSession> => {
-  const response = await api.post(
-    `/caption/assistant/session/${sessionId}/plan`,
-    { selected_plan_ids: selectedPlanIds },
-  );
-
-  return response.data;
-};
-
 export const getCaptionAssistantSession = async (
   sessionId: string,
 ): Promise<CaptionAssistantSession> => {

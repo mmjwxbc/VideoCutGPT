@@ -1,4 +1,3 @@
-// 字幕生成相关类型
 export interface CaptionResponse {
   caption: string;
   editing_plan?: string;
@@ -16,36 +15,6 @@ export interface Keyframe {
   height: number;
 }
 
-export interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  created_at: string;
-}
-
-export interface ExecutionPlanOption {
-  id: string;
-  title: string;
-  description: string;
-  required: boolean;
-  selected: boolean;
-}
-
-export interface AgentTraceItem {
-  thought: string;
-  action: string;
-  observation: string;
-  created_at: string;
-}
-
-export interface ExecutionEventItem {
-  kind: string;
-  title: string;
-  detail: string;
-  tool: string;
-  artifact: string;
-  created_at: string;
-}
-
 export interface WorkflowArtifactState {
   label: string;
   status: string;
@@ -56,9 +25,6 @@ export interface WorkflowArtifactState {
 }
 
 export interface EditingWorkflowState {
-  request_summary: string;
-  confirmation_required: boolean;
-  confirmed_plan_summary: string;
   keyframe_analysis: WorkflowArtifactState;
   video_summary: WorkflowArtifactState;
   subtitle_draft: WorkflowArtifactState;
@@ -67,46 +33,47 @@ export interface EditingWorkflowState {
   tags: WorkflowArtifactState;
 }
 
-export interface CaptionAssistantSession {
-  session_id: string;
-  platform: string;
+export interface GlobalEditingState {
+  request_summary: string;
   keyframes: Keyframe[];
-  video_summary: string;
   frame_analyses: string[];
-  execution_plan: string[];
-  plan_options: ExecutionPlanOption[];
-  selected_plan_ids: string[];
-  agent_trace: AgentTraceItem[];
-  execution_events: ExecutionEventItem[];
+  video_summary: string;
   subtitle_draft: string;
   editing_plan: string;
   english_title: string;
   tags: string[];
-  editing_state: EditingWorkflowState;
-  planner_stream: string;
-  messages: ChatMessage[];
-  status:
-    | 'idle'
-    | 'queued'
-    | 'planning'
-    | 'awaiting_plan_selection'
-    | 'processing'
-    | 'completed'
-    | 'error';
-  progress_message: string;
+  workflow: EditingWorkflowState;
+  updated_at: string;
+}
+
+export interface TurnEventItem {
+  type: 'thought' | 'tool_call' | 'final_text';
+  content: string;
+  tool_name: string;
+  arguments: string;
+  created_at: string;
+}
+
+export interface AgentTurn {
+  turn_id: string;
+  user_prompt: string;
+  status: 'running' | 'completed' | 'error';
+  events: TurnEventItem[];
+  final_text: string;
+  error_message: string;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface CaptionAssistantSession {
+  session_id: string;
+  platform: string;
+  turns: AgentTurn[];
+  global_editing_state: GlobalEditingState;
+  status: 'idle' | 'processing' | 'completed' | 'error';
+  active_turn_id: string;
   error_message: string;
   version: number;
   created_at: string;
   updated_at: string;
-}
-
-export interface CaptionSessionEvent {
-  event: string;
-  data: CaptionAssistantSession | {
-    session_id: string;
-    status: string;
-    message: string;
-    version: number;
-    updated_at: string;
-  };
 }

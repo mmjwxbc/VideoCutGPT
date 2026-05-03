@@ -1,18 +1,17 @@
 import React from 'react';
 
 import ChatComposer, { ChatComposerOption } from '../ChatComposer';
-import { AssistantTurnCard, ChatBubble, ExecutionGroup } from './shared';
-import { CaptionAssistantSession, ChatMessage } from '../../types';
+import { AgentTurn, CaptionAssistantSession } from '../../types';
+import { AssistantTurnCard, ChatBubble } from './shared';
 
 interface ConversationPanelProps {
   mobilePane: 'chat' | 'workspace';
   setMobilePane: React.Dispatch<React.SetStateAction<'chat' | 'workspace'>>;
   threadRef: React.RefObject<HTMLDivElement>;
   session: CaptionAssistantSession | null;
-  messages: ChatMessage[];
+  turns: AgentTurn[];
+  pendingUserPrompt: string | null;
   isRunning: boolean;
-  progressText: string;
-  executionGroups: ExecutionGroup[];
   draftPrompt: string;
   setDraftPrompt: (value: string) => void;
   submitPrompt: (value: string) => void | Promise<void>;
@@ -36,10 +35,9 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   setMobilePane,
   threadRef,
   session,
-  messages,
+  turns,
+  pendingUserPrompt,
   isRunning,
-  progressText,
-  executionGroups,
   draftPrompt,
   setDraftPrompt,
   submitPrompt,
@@ -56,19 +54,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   sellingPointsOpen,
   setSellingPointsOpen,
   error,
-}) => {
-  const lastMessage = messages[messages.length - 1];
-  const showActiveAssistantCard = Boolean(
-    session &&
-      (session.status === 'queued' ||
-        session.status === 'planning' ||
-        session.status === 'processing' ||
-        session.status === 'awaiting_plan_selection') &&
-      lastMessage?.role !== 'assistant',
-  );
-
-  return (
-    <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
+}) => (
+  <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
     <div className="flex items-center gap-2 border-b border-slate-800 bg-[#0f0f0f] px-4 py-3 lg:hidden">
       <button
         type="button"
@@ -90,7 +77,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
             : 'border-slate-800 bg-[#171717] text-slate-400'
         }`}
       >
-        执行工作区
+        剪辑状态
       </button>
     </div>
 
@@ -100,7 +87,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#090909] px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex min-h-full flex-col gap-3 pb-6">
-          {!session ? (
+          {!session && !pendingUserPrompt ? (
             <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
               <div className="max-w-lg">
                 <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
@@ -110,42 +97,24 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
                   先在下方创建你的第一轮任务
                 </h3>
                 <p className="mt-2 text-[12px] leading-5 text-slate-400">
-                  提交后，这里会持续显示用户要求、助手回复和后续每一轮改稿指令。
+                  提交后，这里只展示每一轮的工具调用参数、思考过程和最终文字输出。
                 </p>
               </div>
             </div>
           ) : (
             <>
-              {messages.map((message, index) => (
-                <div key={`${message.created_at}-${index}`} className="space-y-2.5">
-                  {message.role === 'assistant' && index === messages.length - 1 ? (
-                    <AssistantTurnCard
-                      message={message}
-                      status={session?.status}
-                      isRunning={isRunning}
-                      progressText={progressText}
-                      plannerStream={session?.planner_stream ?? ''}
-                      executionGroups={executionGroups}
-                    />
-                  ) : (
-                    <ChatBubble message={message} />
-                  )}
+              {turns.map((turn) => (
+                <div key={turn.turn_id} className="space-y-2.5">
+                  <ChatBubble content={turn.user_prompt} />
+                  <AssistantTurnCard
+                    turn={turn}
+                    isActive={session?.active_turn_id === turn.turn_id && turn.status === 'running'}
+                  />
                 </div>
               ))}
 
-              {showActiveAssistantCard ? (
-                <AssistantTurnCard
-                  message={{
-                    role: 'assistant',
-                    content: '',
-                    created_at: session?.updated_at ?? new Date().toISOString(),
-                  }}
-                  status={session?.status}
-                  isRunning={isRunning}
-                  progressText={progressText}
-                  plannerStream={session?.planner_stream ?? ''}
-                  executionGroups={executionGroups}
-                />
+              {pendingUserPrompt && !turns.length ? (
+                <ChatBubble content={pendingUserPrompt} />
               ) : null}
             </>
           )}
@@ -159,7 +128,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           value={draftPrompt}
           onChange={setDraftPrompt}
           onSubmit={(nextValue) => void submitPrompt(nextValue)}
-          disabled={isRunning || session?.status === 'awaiting_plan_selection'}
+          disabled={isRunning}
           platform={platform}
           platformOptions={platformOptions}
           onPlatformChange={setPlatform}
@@ -177,13 +146,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           sellingPointsOpen={sellingPointsOpen}
           onSellingPointsToggle={() => setSellingPointsOpen((current) => !current)}
           toolsDisabled={composerMode !== 'initial' || isRunning}
-          placeholder={
-            composerMode === 'initial'
-              ? '有问题，尽管问'
-              : session?.status === 'awaiting_plan_selection'
-                ? '请先在右侧确认 Agent 执行计划。'
-                : '有问题，尽管问'
-          }
+          placeholder="有问题，尽管问"
         />
 
         {error ? (
@@ -196,8 +159,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         ) : null}
       </div>
     </div>
-    </section>
-  );
-};
+  </section>
+);
 
 export default ConversationPanel;

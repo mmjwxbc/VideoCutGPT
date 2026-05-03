@@ -1,36 +1,16 @@
-import React, {
-  startTransition,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import ConversationPanel from '../components/caption-studio/ConversationPanel';
 import HistorySidebar from '../components/caption-studio/HistorySidebar';
 import WorkspaceSidebar from '../components/caption-studio/WorkspaceSidebar';
 import {
   captionSessionEventsUrl,
-  confirmCaptionAssistantPlan,
   continueCaptionAssistantSession,
   createCaptionAssistantSession,
   getCaptionAssistantSession,
 } from '../api/api';
-import {
-  SessionListItem,
-  buildSessionHistoryItem,
-  formatSeconds,
-  getWorkflowRows,
-  groupExecutionEvents,
-} from '../components/caption-studio/shared';
-import {
-  CaptionAssistantSession,
-  ChatMessage,
-  ExecutionEventItem,
-  ExecutionPlanOption,
-  Keyframe,
-} from '../types';
+import { SessionListItem, buildSessionHistoryItem, getWorkflowRows } from '../components/caption-studio/shared';
+import { CaptionAssistantSession, TurnEventItem } from '../types';
 
 const PLATFORM_OPTIONS = [
   { value: 'tiktok', label: 'TikTok', iconClassName: 'bg-slate-900' },
@@ -39,57 +19,7 @@ const PLATFORM_OPTIONS = [
   { value: 'instagram', label: 'Instagram', iconClassName: 'bg-fuchsia-500' },
 ];
 
-const SNAPSHOT_EVENTS = new Set([
-  'snapshot',
-  'session_created',
-  'message_queued',
-  'plan_ready',
-  'plan_confirmed',
-  'completed',
-  'error',
-]);
-
 const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
-
-const appendUniqueExecutionEvent = (
-  current: ExecutionEventItem[],
-  nextItem: ExecutionEventItem,
-) => {
-  const exists = current.some(
-    (item) =>
-      item.created_at === nextItem.created_at &&
-      item.kind === nextItem.kind &&
-      item.title === nextItem.title &&
-      item.detail === nextItem.detail,
-  );
-  if (exists) {
-    return current;
-  }
-  return [...current, nextItem];
-};
-
-const ensureAssistantMessageSlot = (
-  currentMessages: ChatMessage[],
-  messageIndex: number,
-  createdAt: string,
-) => {
-  const nextMessages = [...currentMessages];
-  while (nextMessages.length <= messageIndex) {
-    nextMessages.push({
-      role: 'assistant',
-      content: '',
-      created_at: createdAt,
-    });
-  }
-  if (nextMessages[messageIndex]?.role !== 'assistant') {
-    nextMessages.splice(messageIndex + 1, 0, {
-      role: 'assistant',
-      content: '',
-      created_at: createdAt,
-    });
-  }
-  return nextMessages;
-};
 
 const isStaleSessionVersion = (nextVersion?: number, currentVersion?: number) => {
   if (typeof nextVersion !== 'number' || typeof currentVersion !== 'number') {
@@ -97,11 +27,6 @@ const isStaleSessionVersion = (nextVersion?: number, currentVersion?: number) =>
   }
   return nextVersion < currentVersion;
 };
-
-const buildAssistantReplyFromSession = (nextSession: CaptionAssistantSession) =>
-  nextSession.messages[nextSession.messages.length - 1]?.content ||
-  nextSession.progress_message ||
-  '本轮产物已生成完成。';
 
 const CaptionGenerator: React.FC = () => {
   const [video, setVideo] = useState<File | null>(null);
@@ -116,246 +41,81 @@ const CaptionGenerator: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [sseTimedOut, setSseTimedOut] = useState<boolean>(false);
-  const [selectedKeyframe, setSelectedKeyframe] = useState<Keyframe | null>(null);
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([]);
   const [composerMode, setComposerMode] = useState<'initial' | 'followup'>(
     'initial',
   );
   const [mobilePane, setMobilePane] = useState<'chat' | 'workspace'>('chat');
-  const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
-  const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
+  const [pendingUserPrompt, setPendingUserPrompt] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const sessionRef = useRef<CaptionAssistantSession | null>(null);
-  const pendingSessionRef = useRef<CaptionAssistantSession | null>(null);
-  const pendingSessionFlushRef = useRef<number | null>(null);
 
-  const messages = useMemo(() => {
-    const currentMessages = session?.messages ?? [];
-    const optimisticMessages =
-      pendingUserMessage &&
-      currentMessages[currentMessages.length - 1]?.content !== pendingUserMessage.content
-        ? [...currentMessages, pendingUserMessage]
-        : currentMessages;
-    if (!session || session.status !== 'completed') {
-      return optimisticMessages;
-    }
-    const lastMessage = optimisticMessages[optimisticMessages.length - 1];
-    if (lastMessage?.role === 'assistant' && lastMessage.content.trim()) {
-      return optimisticMessages;
-    }
-    return [
-      ...optimisticMessages,
-      {
-        role: 'assistant' as const,
-        content: buildAssistantReplyFromSession(session),
-        created_at: session.updated_at,
-      },
-    ];
-  }, [pendingUserMessage, session]);
-  const planOptions = session?.plan_options ?? [];
-  const executionEvents = session?.execution_events ?? [];
-  const executionGroups = useMemo(
-    () => groupExecutionEvents(executionEvents),
-    [executionEvents],
-  );
+  const turns = session?.turns ?? [];
   const workflowRows = useMemo(
-    () => getWorkflowRows(session?.editing_state),
-    [session?.editing_state],
+    () => getWorkflowRows(session?.global_editing_state?.workflow),
+    [session?.global_editing_state?.workflow],
   );
-  const isRunning = session
-    ? session.status === 'queued' ||
-      session.status === 'planning' ||
-      session.status === 'processing'
-    : loading;
-  const progressText = useMemo(() => {
-    if (!session) {
-      return '处理中…';
-    }
-    if (
-      sseTimedOut &&
-      (session.status === 'queued' ||
-        session.status === 'planning' ||
-        session.status === 'processing')
-    ) {
-      return 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。';
-    }
-    if (session.status === 'completed') {
-      if (
-        session.progress_message &&
-        !session.progress_message.startsWith('Agent 正在')
-      ) {
-        return session.progress_message;
-      }
-      return session.selected_plan_ids.length ? '所选执行项已完成。' : '本轮修改完成。';
-    }
-    if (session.status === 'error') {
-      return session.error_message || '处理失败。';
-    }
-    return session.progress_message || '处理中…';
-  }, [session, sseTimedOut]);
-  const currentExecutionGroup =
-    executionGroups.length > 0 ? executionGroups[executionGroups.length - 1] : null;
-  const hasWorkspaceReply = Boolean(
-    session?.plan_options?.length ||
-    session?.execution_events?.length ||
-    session?.agent_trace?.length ||
-    session?.execution_plan?.length ||
-    workflowRows.length,
-  );
+  const isRunning = session ? session.status === 'processing' : loading;
 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
-  const clearPendingSessionFlush = useCallback(() => {
-    if (pendingSessionFlushRef.current !== null) {
-      window.clearTimeout(pendingSessionFlushRef.current);
-      pendingSessionFlushRef.current = null;
-    }
-    pendingSessionRef.current = null;
+  const applyAuthoritativeSession = useCallback((nextSession: CaptionAssistantSession) => {
+    setPendingUserPrompt(null);
+    sessionRef.current = nextSession;
+    setSession((current) => {
+      if (current && isStaleSessionVersion(nextSession.version, current.version)) {
+        return current;
+      }
+      return nextSession;
+    });
+    setComposerMode('followup');
+    setLoading(nextSession.status === 'processing');
+    setError(nextSession.status === 'error' ? nextSession.error_message || '处理失败，请重试' : '');
   }, []);
-
-  const scheduleSessionMerge = useCallback(
-    (updater: (current: CaptionAssistantSession | null) => CaptionAssistantSession | null) => {
-      const currentBase = pendingSessionRef.current ?? sessionRef.current;
-      const nextSession = updater(currentBase);
-      if (!nextSession) {
-        return;
-      }
-
-      pendingSessionRef.current = nextSession;
-      if (pendingSessionFlushRef.current !== null) {
-        return;
-      }
-
-      pendingSessionFlushRef.current = window.setTimeout(() => {
-        pendingSessionFlushRef.current = null;
-        const pendingSession = pendingSessionRef.current;
-        pendingSessionRef.current = null;
-        if (!pendingSession) {
-          return;
-        }
-        sessionRef.current = pendingSession;
-        startTransition(() => {
-          setSession(pendingSession);
-        });
-      }, 120);
-    },
-    [],
-  );
-
-  const applyAuthoritativeSession = (nextSession: CaptionAssistantSession) => {
-    const commitSession = () => {
-      clearPendingSessionFlush();
-      sessionRef.current = nextSession;
-      setPendingUserMessage(null);
-      setSession((current) => {
-        if (nextSession.status === 'completed' || nextSession.status === 'error') {
-          if (current && isStaleSessionVersion(nextSession.version, current.version)) {
-            return current;
-          }
-          return nextSession;
-        }
-        if (current && isStaleSessionVersion(nextSession.version, current.version)) {
-          return current;
-        }
-        return nextSession;
-      });
-      setComposerMode('followup');
-      if (nextSession.status === 'completed' || nextSession.status === 'error') {
-        setMobilePane('chat');
-      }
-      setLoading(
-        nextSession.status === 'queued' ||
-          nextSession.status === 'planning' ||
-          nextSession.status === 'processing',
-      );
-      setError(
-        nextSession.status === 'error'
-          ? nextSession.error_message || '处理失败，请重试'
-          : '',
-      );
-    };
-
-    if (nextSession.status === 'completed' || nextSession.status === 'error') {
-      commitSession();
-      return;
-    }
-
-    startTransition(commitSession);
-  };
 
   const reconcileTerminalSession = useCallback(async (sessionId: string) => {
     try {
       const latestSession = await getCaptionAssistantSession(sessionId);
       applyAuthoritativeSession(latestSession);
     } catch (err) {
-      console.error('Error reconciling terminal caption session:', err);
+      console.error('Error reconciling caption session:', err);
     }
-  }, []);
+  }, [applyAuthoritativeSession]);
 
-  const upsertSessionHistory = (
-    nextSession: CaptionAssistantSession,
-    fallbackTitle?: string,
-  ) => {
-    setSessionHistory((current) => {
-      const previousItem = current.find(
-        (item) => item.session_id === nextSession.session_id,
-      );
-      const nextItem = buildSessionHistoryItem(
-        nextSession,
-        fallbackTitle,
-        previousItem,
-      );
-      const remaining = current.filter(
-        (item) => item.session_id !== nextSession.session_id,
-      );
-      return [nextItem, ...remaining].sort(
-        (left, right) =>
-          new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
-      );
-    });
-  };
-
-  useEffect(() => {
-    if (!session) {
-      setSelectedPlanIds([]);
-      return;
-    }
-
-    if (session.status !== 'awaiting_plan_selection') {
-      setSelectedPlanIds(session.selected_plan_ids ?? []);
-      return;
-    }
-
-    const defaults = session.plan_options
-      .filter((option) => option.required || option.selected)
-      .map((option) => option.id);
-    setSelectedPlanIds(defaults);
-  }, [session]);
+  const upsertSessionHistory = useCallback(
+    (nextSession: CaptionAssistantSession, fallbackTitle?: string) => {
+      setSessionHistory((current) => {
+        const previousItem = current.find(
+          (item) => item.session_id === nextSession.session_id,
+        );
+        const nextItem = buildSessionHistoryItem(
+          nextSession,
+          fallbackTitle,
+          previousItem,
+        );
+        const remaining = current.filter(
+          (item) => item.session_id !== nextSession.session_id,
+        );
+        return [nextItem, ...remaining].sort(
+          (left, right) =>
+            new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
+        );
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!session) {
       return;
     }
     upsertSessionHistory(session);
-  }, [session]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    if (
-      session.status !== 'queued' &&
-      session.status !== 'planning' &&
-      session.status !== 'processing'
-    ) {
-      setLoading(false);
-    }
-  }, [session]);
+  }, [session, upsertSessionHistory]);
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -393,12 +153,7 @@ const CaptionGenerator: React.FC = () => {
         closeSource();
         setSseTimedOut(true);
         setError('SSE 连接 30 分钟没有新事件，已停止等待并回查后台状态。');
-        try {
-          const latestSession = await getCaptionAssistantSession(session.session_id);
-          applyAuthoritativeSession(latestSession);
-        } catch (err) {
-          console.error('Error checking caption session after SSE timeout:', err);
-        }
+        await reconcileTerminalSession(session.session_id);
       }, SSE_INACTIVITY_TIMEOUT_MS);
     };
 
@@ -409,15 +164,15 @@ const CaptionGenerator: React.FC = () => {
       applyAuthoritativeSession(nextSession);
     };
 
-    const handleProgress = (raw: MessageEvent<string>) => {
+    const handleTurnEvent = (raw: MessageEvent<string>) => {
       resetInactivityTimer();
       setSseTimedOut(false);
       const payload = JSON.parse(raw.data) as {
         session_id: string;
-        status: CaptionAssistantSession['status'];
-        message: string;
+        turn_id: string;
         version: number;
         updated_at: string;
+        event: TurnEventItem;
       };
       setSession((current) => {
         if (!current) {
@@ -428,217 +183,38 @@ const CaptionGenerator: React.FC = () => {
         }
         return {
           ...current,
-          status: payload.status,
-          progress_message: payload.message,
           version: payload.version,
           updated_at: payload.updated_at,
-        };
-      });
-      setLoading(
-        payload.status === 'queued' ||
-          payload.status === 'planning' ||
-          payload.status === 'processing',
-      );
-    };
-
-    const handleExecutionEvent = (raw: MessageEvent<string>) => {
-      resetInactivityTimer();
-      setSseTimedOut(false);
-      const payload = JSON.parse(raw.data) as {
-        session_id: string;
-        version: number;
-        kind: string;
-        title: string;
-        detail: string;
-        tool: string;
-        artifact: string;
-        created_at: string;
-      };
-      scheduleSessionMerge((current) => {
-        if (!current) {
-          return current;
-        }
-        if (isStaleSessionVersion(payload.version, current.version)) {
-          return current;
-        }
-        return {
-          ...current,
-          version: payload.version,
-          execution_events: appendUniqueExecutionEvent(current.execution_events ?? [], payload),
+          turns: current.turns.map((turn) =>
+            turn.turn_id === payload.turn_id
+              ? { ...turn, events: [...turn.events, payload.event] }
+              : turn,
+          ),
         };
       });
     };
 
-    const handleArtifactUpdated = (raw: MessageEvent<string>) => {
+    const handleTurnTerminal = (raw: MessageEvent<string>) => {
       resetInactivityTimer();
       setSseTimedOut(false);
-      const payload = JSON.parse(raw.data) as {
-        session_id: string;
-        artifact: string;
-        value: unknown;
-        version: number;
-        updated_at: string;
-      };
-      scheduleSessionMerge((current) => {
-        if (!current) {
-          return current;
-        }
-        if (isStaleSessionVersion(payload.version, current.version)) {
-          return current;
-        }
-        const nextSession: CaptionAssistantSession = {
-          ...current,
-          version: payload.version,
-          updated_at: payload.updated_at,
-        };
-        if (payload.artifact === 'keyframes') {
-          nextSession.keyframes = Array.isArray(payload.value) ? (payload.value as Keyframe[]) : current.keyframes;
-        } else if (payload.artifact === 'frame_analyses') {
-          nextSession.frame_analyses = Array.isArray(payload.value) ? (payload.value as string[]) : current.frame_analyses;
-        } else if (payload.artifact === 'video_summary') {
-          nextSession.video_summary = typeof payload.value === 'string' ? payload.value : current.video_summary;
-        } else if (payload.artifact === 'subtitle_draft') {
-          nextSession.subtitle_draft = typeof payload.value === 'string' ? payload.value : current.subtitle_draft;
-        } else if (payload.artifact === 'editing_plan') {
-          nextSession.editing_plan = typeof payload.value === 'string' ? payload.value : current.editing_plan;
-        } else if (payload.artifact === 'english_title') {
-          nextSession.english_title = typeof payload.value === 'string' ? payload.value : current.english_title;
-        } else if (payload.artifact === 'tags') {
-          nextSession.tags = Array.isArray(payload.value) ? (payload.value as string[]) : current.tags;
-        }
-        return nextSession;
-      });
+      const nextSession = JSON.parse(raw.data) as CaptionAssistantSession;
+      applyAuthoritativeSession(nextSession);
     };
 
-    const handleArtifactChunk = (raw: MessageEvent<string>) => {
+    source.addEventListener('snapshot', handleSnapshot as EventListener);
+    source.addEventListener('turn_event', handleTurnEvent as EventListener);
+    source.addEventListener('turn_completed', handleTurnTerminal as EventListener);
+    source.addEventListener('turn_error', handleTurnTerminal as EventListener);
+    source.addEventListener('ping', (() => {
       resetInactivityTimer();
       setSseTimedOut(false);
-      const payload = JSON.parse(raw.data) as {
-        session_id: string;
-        artifact: string;
-        content: string;
-        version: number;
-        updated_at: string;
-      };
-      scheduleSessionMerge((current) => {
-        if (!current) {
-          return current;
-        }
-        if (isStaleSessionVersion(payload.version, current.version)) {
-          return current;
-        }
-        const nextSession: CaptionAssistantSession = {
-          ...current,
-          version: payload.version,
-          updated_at: payload.updated_at,
-        };
-        if (payload.artifact === 'video_summary') {
-          nextSession.video_summary = payload.content;
-        } else if (payload.artifact === 'subtitle_draft') {
-          nextSession.subtitle_draft = payload.content;
-        } else if (payload.artifact === 'editing_plan') {
-          nextSession.editing_plan = payload.content;
-        } else if (payload.artifact === 'english_title') {
-          nextSession.english_title = payload.content;
-        }
-        return nextSession;
-      });
-    };
-
-    const handleMessageChunk = (raw: MessageEvent<string>) => {
-      resetInactivityTimer();
-      setSseTimedOut(false);
-      const payload = JSON.parse(raw.data) as {
-        session_id: string;
-        message_index: number;
-        content: string;
-        version: number;
-        updated_at: string;
-      };
-      scheduleSessionMerge((current) => {
-        if (!current) {
-          return current;
-        }
-        if (isStaleSessionVersion(payload.version, current.version)) {
-          return current;
-        }
-        const nextMessages = ensureAssistantMessageSlot(
-          current.messages,
-          payload.message_index,
-          payload.updated_at,
-        );
-        if (payload.message_index >= 0 && payload.message_index < nextMessages.length) {
-          nextMessages[payload.message_index] = {
-            ...nextMessages[payload.message_index],
-            role: 'assistant',
-            content: payload.content,
-            created_at:
-              nextMessages[payload.message_index]?.created_at || payload.updated_at,
-          };
-        }
-        return {
-          ...current,
-          messages: nextMessages,
-          version: payload.version,
-          updated_at: payload.updated_at,
-        };
-      });
-    };
-
-    const handlePlannerChunk = (raw: MessageEvent<string>) => {
-      resetInactivityTimer();
-      setSseTimedOut(false);
-      const payload = JSON.parse(raw.data) as {
-        session_id: string;
-        content: string;
-        version: number;
-        updated_at: string;
-      };
-      scheduleSessionMerge((current) => {
-        if (!current) {
-          return current;
-        }
-        if (isStaleSessionVersion(payload.version, current.version)) {
-          return current;
-        }
-        return {
-          ...current,
-          planner_stream: payload.content,
-          version: payload.version,
-          updated_at: payload.updated_at,
-        };
-      });
-    };
-
-    const handlePing = () => {
-      resetInactivityTimer();
-      setSseTimedOut(false);
-    };
-
-    for (const eventName of SNAPSHOT_EVENTS) {
-      source.addEventListener(eventName, handleSnapshot as EventListener);
-    }
-    source.addEventListener('progress', handleProgress as EventListener);
-    source.addEventListener('execution_event', handleExecutionEvent as EventListener);
-    source.addEventListener('artifact_updated', handleArtifactUpdated as EventListener);
-    source.addEventListener('artifact_chunk', handleArtifactChunk as EventListener);
-    source.addEventListener('message_chunk', handleMessageChunk as EventListener);
-    source.addEventListener('planner_chunk', handlePlannerChunk as EventListener);
-    source.addEventListener('ping', handlePing as EventListener);
+    }) as EventListener);
     source.onerror = async () => {
       console.error('Caption SSE connection interrupted.');
       clearInactivityTimer();
-      try {
-        const latestSession = await getCaptionAssistantSession(session.session_id);
-        applyAuthoritativeSession(latestSession);
-        if (eventSourceRef.current === source) {
-          resetInactivityTimer();
-        }
-      } catch (err) {
-        console.error('Error reconciling caption session after SSE interruption:', err);
-        if (eventSourceRef.current === source) {
-          resetInactivityTimer();
-        }
+      await reconcileTerminalSession(session.session_id);
+      if (eventSourceRef.current === source) {
+        resetInactivityTimer();
       }
     };
     resetInactivityTimer();
@@ -646,7 +222,7 @@ const CaptionGenerator: React.FC = () => {
     return () => {
       closeSource();
     };
-  }, [clearPendingSessionFlush, scheduleSessionMerge, session?.session_id]);
+  }, [applyAuthoritativeSession, reconcileTerminalSession, session?.session_id]);
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -654,23 +230,7 @@ const CaptionGenerator: React.FC = () => {
       return;
     }
     thread.scrollTop = thread.scrollHeight;
-  }, [messages.length, progressText, session?.updated_at]);
-
-  useEffect(() => {
-    if (!session?.session_id) {
-      return;
-    }
-    if (session.status !== 'completed' && session.status !== 'error') {
-      return;
-    }
-    const hasAssistantReply = session.messages.some(
-      (message) => message.role === 'assistant' && message.content.trim(),
-    );
-    if (hasAssistantReply) {
-      return;
-    }
-    void reconcileTerminalSession(session.session_id);
-  }, [session, reconcileTerminalSession]);
+  }, [pendingUserPrompt, turns.length, session?.updated_at]);
 
   useEffect(() => {
     if (!video) {
@@ -695,9 +255,8 @@ const CaptionGenerator: React.FC = () => {
   const resetSession = () => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
-    clearPendingSessionFlush();
     sessionRef.current = null;
-    setPendingUserMessage(null);
+    setPendingUserPrompt(null);
     setSession(null);
     setVideo(null);
     setVideoPreviewUrl(null);
@@ -705,7 +264,6 @@ const CaptionGenerator: React.FC = () => {
     setSellingPointsOpen(false);
     setDraftPrompt('请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。');
     setComposerMode('initial');
-    setSelectedPlanIds([]);
     setLoading(false);
     setSseTimedOut(false);
     setError('');
@@ -752,6 +310,7 @@ const CaptionGenerator: React.FC = () => {
       setLoading(true);
       setSseTimedOut(false);
       setError('');
+      setPendingUserPrompt(normalizedPrompt);
 
       try {
         const response = await createCaptionAssistantSession(
@@ -769,16 +328,12 @@ const CaptionGenerator: React.FC = () => {
         });
         upsertSessionHistory(response, normalizedPrompt);
       } catch (err) {
+        setPendingUserPrompt(null);
         setLoading(false);
         setError('初始化对话助手失败，请检查后端接口和模型配置');
         console.error('Error creating caption assistant session:', err);
       }
 
-      return;
-    }
-
-    if (session?.status === 'awaiting_plan_selection') {
-      setError('请先确认 Agent 执行计划，再继续发送改稿指令');
       return;
     }
 
@@ -789,11 +344,7 @@ const CaptionGenerator: React.FC = () => {
     setLoading(true);
     setSseTimedOut(false);
     setError('');
-    setPendingUserMessage({
-      role: 'user',
-      content: normalizedPrompt,
-      created_at: new Date().toISOString(),
-    });
+    setPendingUserPrompt(normalizedPrompt);
 
     try {
       const response = await continueCaptionAssistantSession(
@@ -807,54 +358,10 @@ const CaptionGenerator: React.FC = () => {
         setMobilePane('chat');
       });
     } catch (err) {
-      setPendingUserMessage(null);
+      setPendingUserPrompt(null);
       setLoading(false);
       setError('继续修改失败，请重试');
       console.error('Error continuing caption assistant session:', err);
-    }
-  };
-
-  const togglePlanOption = (option: ExecutionPlanOption) => {
-    if (option.required) {
-      return;
-    }
-
-    setSelectedPlanIds((current) =>
-      current.includes(option.id)
-        ? current.filter((item) => item !== option.id)
-        : [...current, option.id],
-    );
-  };
-
-  const handleConfirmPlan = async () => {
-    if (!session) {
-      return;
-    }
-
-    const requiredIds = planOptions
-      .filter((option) => option.required)
-      .map((option) => option.id);
-    const nextIds = Array.from(new Set([...selectedPlanIds, ...requiredIds]));
-
-    if (!requiredIds.every((id) => nextIds.includes(id))) {
-      setError('关键帧分析是必选项，不能取消');
-      return;
-    }
-
-    setLoading(true);
-    setSseTimedOut(false);
-    setError('');
-
-    try {
-      const response = await confirmCaptionAssistantPlan(session.session_id, nextIds);
-      applyAuthoritativeSession(response);
-      startTransition(() => {
-        setMobilePane('workspace');
-      });
-    } catch (err) {
-      setLoading(false);
-      setError('确认执行计划失败，请重试');
-      console.error('Error confirming caption assistant plan:', err);
     }
   };
 
@@ -863,7 +370,7 @@ const CaptionGenerator: React.FC = () => {
   );
   const activeSessionTitle =
     activeSessionItem?.title ||
-    session?.messages.find((message) => message.role === 'user')?.content?.slice(0, 28) ||
+    session?.turns[0]?.user_prompt?.slice(0, 28) ||
     '未命名会话';
 
   return (
@@ -890,10 +397,9 @@ const CaptionGenerator: React.FC = () => {
           setMobilePane={setMobilePane}
           threadRef={threadRef}
           session={session}
-          messages={messages}
+          turns={turns}
+          pendingUserPrompt={pendingUserPrompt}
           isRunning={isRunning}
-          progressText={progressText}
-          executionGroups={executionGroups}
           draftPrompt={draftPrompt}
           setDraftPrompt={setDraftPrompt}
           submitPrompt={(value) => void submitPrompt(value)}
@@ -909,55 +415,20 @@ const CaptionGenerator: React.FC = () => {
           setProductManual={setProductManual}
           sellingPointsOpen={sellingPointsOpen}
           setSellingPointsOpen={setSellingPointsOpen}
-          error={error}
+          error={
+            sseTimedOut && !error
+              ? 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。'
+              : error
+          }
         />
 
         <WorkspaceSidebar
           mobilePane={mobilePane}
           session={session}
           activeSessionTitle={activeSessionTitle}
-          progressText={progressText}
-          hasWorkspaceReply={hasWorkspaceReply}
-          planOptions={planOptions}
-          selectedPlanIds={selectedPlanIds}
-          togglePlanOption={togglePlanOption}
-          currentExecutionGroup={currentExecutionGroup}
-          isRunning={isRunning}
           workflowRows={workflowRows}
-          onConfirmPlan={() => void handleConfirmPlan()}
         />
       </div>
-
-      {selectedKeyframe ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
-          onClick={() => setSelectedKeyframe(null)}
-        >
-          <div
-            className="max-h-[90vh] max-w-4xl overflow-hidden rounded-[28px] border border-slate-700 bg-[#111111] shadow-[0_30px_100px_rgba(0,0,0,0.45)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <img
-              src={`data:image/jpeg;base64,${selectedKeyframe.image_base64}`}
-              alt="关键帧预览"
-              className="max-h-[78vh] w-full object-contain bg-slate-950"
-            />
-            <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-sm text-slate-300">
-              <div>
-                预览图 · {formatSeconds(selectedKeyframe.timestamp_seconds)} ·{' '}
-                {selectedKeyframe.source}
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedKeyframe(null)}
-                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-600"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <input
         ref={uploadInputRef}
@@ -967,7 +438,6 @@ const CaptionGenerator: React.FC = () => {
         className="sr-only"
         onChange={handleVideoChange}
       />
-
     </div>
   );
 };

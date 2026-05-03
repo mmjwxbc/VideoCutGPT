@@ -1,11 +1,11 @@
 import React from 'react';
-import { Bot, ChevronDown, User } from 'lucide-react';
+import { Bot, ChevronDown, User, Wrench } from 'lucide-react';
 
 import {
+  AgentTurn,
   CaptionAssistantSession,
-  ChatMessage,
   EditingWorkflowState,
-  ExecutionEventItem,
+  TurnEventItem,
   WorkflowArtifactState,
 } from '../../types';
 
@@ -14,17 +14,6 @@ export interface SessionListItem {
   title: string;
   subtitle: string;
   updated_at: string;
-}
-
-export interface ExecutionGroup {
-  parent: ExecutionEventItem;
-  children: ExecutionEventItem[];
-}
-
-export interface AssistantArtifactSection {
-  title: string;
-  content: string;
-  defaultOpen?: boolean;
 }
 
 export interface WorkflowStateRow {
@@ -42,7 +31,7 @@ interface PanelProps {
 }
 
 interface ChatBubbleProps {
-  message: ChatMessage;
+  content: string;
 }
 
 interface WorkflowStepCardProps {
@@ -53,12 +42,8 @@ interface WorkflowStepCardProps {
 }
 
 interface AssistantTurnCardProps {
-  message: ChatMessage;
-  status: CaptionAssistantSession['status'] | undefined;
-  isRunning: boolean;
-  progressText: string;
-  plannerStream: string;
-  executionGroups: ExecutionGroup[];
+  turn: AgentTurn;
+  isActive: boolean;
 }
 
 const panelClassName = 'border border-slate-800 bg-[#111111]';
@@ -71,29 +56,22 @@ export const formatTimestamp = (value: string) =>
     day: 'numeric',
   });
 
-export const formatSeconds = (value: number) => {
-  const totalSeconds = Math.max(0, Math.floor(value));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes.toString().padStart(2, '0')}:${seconds
-    .toString()
-    .padStart(2, '0')}`;
-};
-
 export const buildSessionHistoryItem = (
   nextSession: CaptionAssistantSession,
   fallbackTitle?: string,
   previousItem?: SessionListItem,
 ): SessionListItem => {
+  const firstTurn = nextSession.turns[0];
+  const lastTurn = nextSession.turns[nextSession.turns.length - 1];
   const titleSource =
     previousItem?.title ||
     fallbackTitle ||
-    nextSession.messages.find((message) => message.role === 'user')?.content ||
+    firstTurn?.user_prompt ||
+    nextSession.global_editing_state.request_summary ||
     '未命名会话';
   const subtitleSource =
-    nextSession.messages[nextSession.messages.length - 1]?.content ||
-    nextSession.video_summary ||
-    nextSession.progress_message ||
+    lastTurn?.final_text ||
+    (lastTurn?.status === 'running' ? '当前轮次执行中' : '') ||
     previousItem?.subtitle ||
     '等待处理';
 
@@ -103,79 +81,6 @@ export const buildSessionHistoryItem = (
     subtitle: subtitleSource.trim().slice(0, 42) || '等待处理',
     updated_at: nextSession.updated_at,
   };
-};
-
-export const buildAssistantArtifactSections = (
-  nextSession: CaptionAssistantSession | null,
-): AssistantArtifactSection[] => {
-  if (!nextSession) {
-    return [];
-  }
-
-  const sections: AssistantArtifactSection[] = [];
-  if (nextSession.subtitle_draft.trim()) {
-    sections.push({ title: '字幕草稿', content: nextSession.subtitle_draft.trim() });
-  }
-  if (nextSession.editing_plan.trim()) {
-    sections.push({ title: '剪辑方案', content: nextSession.editing_plan.trim() });
-  }
-  if (nextSession.english_title.trim()) {
-    sections.push({
-      title: '英文标题',
-      content: nextSession.english_title.trim(),
-      defaultOpen: false,
-    });
-  }
-  if (nextSession.tags.length) {
-    sections.push({
-      title: '标签',
-      content: nextSession.tags.map((tag) => `- ${tag}`).join('\n'),
-      defaultOpen: false,
-    });
-  }
-  if (nextSession.video_summary.trim()) {
-    sections.push({
-      title: '视频摘要',
-      content: nextSession.video_summary.trim(),
-      defaultOpen: false,
-    });
-  }
-  return sections;
-};
-
-export const groupExecutionEvents = (events: ExecutionEventItem[]): ExecutionGroup[] => {
-  const groups: ExecutionGroup[] = [];
-  let currentGroup: ExecutionGroup | null = null;
-
-  for (const item of events) {
-    if (item.kind === 'tool_started') {
-      currentGroup = { parent: item, children: [] };
-      groups.push(currentGroup);
-      continue;
-    }
-
-    if (!currentGroup) {
-      currentGroup = {
-        parent: {
-          kind: 'tool_started',
-          title: '执行事件',
-          detail: '系统执行记录',
-          tool: item.tool,
-          artifact: item.artifact,
-          created_at: item.created_at,
-        },
-        children: [],
-      };
-      groups.push(currentGroup);
-    }
-
-    currentGroup.children.push(item);
-    if (item.kind === 'tool_completed') {
-      currentGroup = null;
-    }
-  }
-
-  return groups;
 };
 
 export const getWorkflowRows = (
@@ -216,7 +121,7 @@ export const getWorkflowStatusLabel = (status: string) => {
     case 'in_progress':
       return '进行中';
     case 'planned':
-      return '待确认';
+      return '待执行';
     case 'error':
       return '异常';
     default:
@@ -249,46 +154,19 @@ export const Panel: React.FC<PanelProps> = ({
   </section>
 );
 
-export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
-  const isAssistant = message.role === 'assistant';
-
-  return (
-    <article
-      className={`flex w-full items-start gap-2.5 ${
-        isAssistant ? 'justify-start pr-3 sm:pr-8' : 'justify-end pl-10 sm:pl-24'
-      }`}
-    >
-      {isAssistant ? (
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
-          <Bot className="h-3 w-3" />
-        </div>
-      ) : null}
-
-      <div
-        className={`w-fit min-w-0 rounded-2xl px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ${
-          isAssistant
-            ? 'max-w-[min(92%,52rem)] border border-slate-800 bg-[#161616] text-slate-200'
-            : 'max-w-[min(72%,34rem)] bg-[#2a2a2a] text-white'
-        }`}
-      >
-        <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
-          <span className={isAssistant ? 'text-slate-500' : 'text-white/60'}>
-            {isAssistant ? 'Assistant' : 'You'}
-          </span>
-        </div>
-        <p className="whitespace-pre-wrap break-words text-[12px] leading-5">
-          {message.content}
-        </p>
+export const ChatBubble: React.FC<ChatBubbleProps> = ({ content }) => (
+  <article className="flex w-full items-start gap-2.5 justify-end pl-10 sm:pl-24">
+    <div className="w-fit max-w-[min(72%,34rem)] min-w-0 rounded-2xl bg-[#2a2a2a] px-3 py-2.5 text-white shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+      <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
+        <span className="text-white/60">You</span>
       </div>
-
-      {!isAssistant ? (
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-300 shadow-sm">
-          <User className="h-3 w-3" />
-        </div>
-      ) : null}
-    </article>
-  );
-};
+      <p className="whitespace-pre-wrap break-words text-[12px] leading-5">{content}</p>
+    </div>
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-300 shadow-sm">
+      <User className="h-3 w-3" />
+    </div>
+  </article>
+);
 
 export const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
   title,
@@ -302,7 +180,6 @@ export const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
       : status === 'active'
         ? 'bg-sky-500'
         : 'bg-slate-300';
-
   const statusLabel =
     status === 'completed' ? '已完成' : status === 'active' ? '进行中' : '等待中';
 
@@ -330,130 +207,107 @@ export const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
   );
 };
 
-export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
-  message,
-  status,
-  isRunning,
-  progressText,
-  plannerStream,
-  executionGroups,
-}) => (
-  <article className="flex w-full items-start gap-2.5 justify-start pr-3 sm:pr-8">
-    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
-      <Bot className="h-3 w-3" />
-    </div>
+const renderTurnEvent = (event: TurnEventItem, index: number) => {
+  if (event.type === 'tool_call') {
+    return (
+      <div
+        key={`${event.created_at}-${index}`}
+        className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Wrench className="h-3.5 w-3.5 text-slate-400" />
+            <p className="truncate text-[12px] font-medium text-slate-100">
+              {event.tool_name}
+            </p>
+          </div>
+          <span className="shrink-0 text-[10px] text-slate-500">
+            {formatTimestamp(event.created_at)}
+          </span>
+        </div>
+        <pre className="mt-2 whitespace-pre-wrap break-words rounded-[12px] border border-slate-800 bg-[#121212] px-3 py-2 text-[11px] leading-5 text-slate-400">
+          {event.arguments || '{}'}
+        </pre>
+      </div>
+    );
+  }
 
-    <div className="w-full max-w-[min(92%,52rem)] rounded-2xl border border-slate-800 bg-[#161616] px-3 py-2.5 text-slate-300 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
-      <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
-        <span className="text-slate-500">Assistant</span>
+  if (event.type === 'thought') {
+    return (
+      <div
+        key={`${event.created_at}-${index}`}
+        className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[12px] font-medium text-slate-100">思考过程</p>
+          <span className="shrink-0 text-[10px] text-slate-500">
+            {formatTimestamp(event.created_at)}
+          </span>
+        </div>
+        <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+          {event.content}
+        </p>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
+  turn,
+  isActive,
+}) => {
+  const processEvents = turn.events.filter((event) => event.type !== 'final_text');
+  const finalEvent = turn.events.find((event) => event.type === 'final_text');
+
+  return (
+    <article className="flex w-full items-start gap-2.5 justify-start pr-3 sm:pr-8">
+      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
+        <Bot className="h-3 w-3" />
       </div>
 
-      {plannerStream.trim() || executionGroups.length || isRunning ? (
-        <div className="mb-3 space-y-2.5 border-b border-slate-800 pb-3">
-          <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[12px] font-medium text-slate-100">思考过程</p>
-                <p className="mt-1 text-[11px] leading-4 text-slate-400">
-                  {status === 'awaiting_plan_selection'
-                    ? '计划已生成，等待你确认后执行'
-                    : isRunning
-                      ? progressText
-                      : `${executionGroups.length} 个工具步骤`}
-                </p>
-              </div>
-              <span className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                {status === 'awaiting_plan_selection'
-                  ? '待确认'
-                  : isRunning
-                    ? '进行中'
-                    : '已完成'}
-              </span>
-            </div>
+      <div className="w-full max-w-[min(92%,52rem)] rounded-2xl border border-slate-800 bg-[#161616] px-3 py-2.5 text-slate-300 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+        <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
+            <span className="text-slate-500">Assistant</span>
           </div>
-
-          {plannerStream.trim() ? (
-            <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
-              <p className="mb-1 text-[11px] font-medium text-slate-300">Agent 规划输出</p>
-              <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
-                {plannerStream}
-              </p>
-            </div>
-          ) : null}
-
-          {executionGroups.map((group, index) => {
-            const completed = group.children.some((item) => item.kind === 'tool_completed');
-            return (
-              <details
-                key={`${group.parent.created_at}-${group.parent.title}-${index}`}
-                open={index === executionGroups.length - 1}
-                className="group rounded-[14px] border border-slate-800 bg-[#1b1b1b]"
-              >
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          completed ? 'bg-emerald-500' : 'bg-sky-500'
-                        }`}
-                      />
-                      <p className="truncate text-[12px] font-medium text-slate-100">
-                        {group.parent.title}
-                      </p>
-                    </div>
-                    <p className="mt-1 break-words text-[11px] leading-4 text-slate-400">
-                      {group.parent.detail}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                      {completed ? '已完成' : '进行中'}
-                    </span>
-                    <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
-                  </div>
-                </summary>
-                <div className="border-t border-slate-800 px-3 py-2.5">
-                  <div className="space-y-2">
-                    {group.children.map((item, childIndex) => (
-                      <details
-                        key={`${item.created_at}-${item.kind}-${childIndex}`}
-                        open={
-                          item.kind === 'tool_completed' ||
-                          childIndex === group.children.length - 1
-                        }
-                        className="group rounded-[12px] border border-slate-800 bg-[#121212]"
-                      >
-                        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-[11px] font-medium text-slate-200">
-                              {item.title}
-                            </p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <span className="text-[10px] text-slate-500">
-                              {formatTimestamp(item.created_at)}
-                            </span>
-                            <ChevronDown className="h-3 w-3 text-slate-500 transition group-open:rotate-180" />
-                          </div>
-                        </summary>
-                        <div className="border-t border-slate-800 px-3 py-2">
-                          <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
-                            {item.detail}
-                          </p>
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </div>
-              </details>
-            );
-          })}
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-slate-500">
+            {turn.status === 'completed'
+              ? '已完成'
+              : turn.status === 'error'
+                ? '失败'
+                : isActive
+                  ? '进行中'
+                  : '运行中'}
+          </span>
         </div>
-      ) : null}
 
-      <p className="whitespace-pre-wrap break-words text-[12px] leading-5">
-        {message.content}
-      </p>
-    </div>
-  </article>
-);
+        {processEvents.length ? (
+          <div className="space-y-2.5">
+            {processEvents.map((event, index) => renderTurnEvent(event, index))}
+          </div>
+        ) : isActive ? (
+          <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5 text-[12px] text-slate-400">
+            当前轮次已创建，等待 Agent 产出过程事件。
+          </div>
+        ) : null}
+
+        {turn.status === 'error' ? (
+          <div className="mt-3 rounded-[14px] border border-rose-900/60 bg-rose-950/40 px-3 py-2.5 text-[12px] text-rose-200">
+            {turn.error_message || '本轮执行失败。'}
+          </div>
+        ) : null}
+
+        {finalEvent?.content || turn.final_text ? (
+          <div className="mt-3 rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
+            <p className="text-[12px] font-medium text-slate-100">最终输出</p>
+            <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-300">
+              {finalEvent?.content || turn.final_text}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+};
