@@ -85,24 +85,4 @@ export const getCaptionAssistantSession = async (
   return response.data;
 };
 
-// 多Agent讨论
-export const runDiscussion = async (topic: string, requirements: string) => {
-  const response = await api.post('/multi-agent/discuss', {
-    topic,
-    requirements,
-  });
-
-  return response.data;
-};
-
-// 市场调研
-export const researchMarket = async (product: string, targetMarket: string) => {
-  const response = await api.post('/deep-research/market', {
-    product,
-    target_market: targetMarket,
-  });
-
-  return response.data;
-};
-
 export default api;

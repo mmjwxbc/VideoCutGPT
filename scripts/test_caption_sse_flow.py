@@ -11,6 +11,7 @@ import httpx
 
 
 DEFAULT_PROMPT = "请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。"
+DEFAULT_FOLLOWUP_PROMPT = "请把字幕语气改得更直接一些，并同步优化剪辑节奏。"
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +22,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", default="backend/uploads/test.mp4")
     parser.add_argument("--platform", default="tiktok")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument(
+        "--followup-prompt",
+        action="append",
+        dest="followup_prompts",
+        default=[],
+        help="Append a follow-up user prompt. Can be passed multiple times.",
+    )
     parser.add_argument("--event-timeout", type=float, default=300.0)
     parser.add_argument("--overall-timeout", type=float, default=1800.0)
     return parser.parse_args()
@@ -37,6 +45,21 @@ async def fetch_session(client: httpx.AsyncClient, base_url: str, session_id: st
     response = await client.get(f"{base_url}/api/caption/assistant/session/{session_id}")
     response.raise_for_status()
     return response.json()
+
+
+def summarize_session(label: str, session: dict[str, Any]) -> None:
+    messages = session.get("messages") or []
+    last_message = messages[-1] if messages else {}
+    print(
+        f"[{label}] "
+        f"version={session.get('version')} "
+        f"status={session.get('status')} "
+        f"progress={session.get('progress_message')!r} "
+        f"messages={len(messages)} "
+        f"last_role={last_message.get('role', '-')} "
+        f"last_preview={str(last_message.get('content', ''))[:80]!r}",
+        flush=True,
+    )
 
 
 async def confirm_plan_once(
@@ -68,13 +91,107 @@ async def confirm_plan_once(
     )
     response.raise_for_status()
     confirmed_session = response.json()
-    print(
-        "[plan] confirm response "
-        f"status={confirmed_session.get('status')} "
-        f"progress={confirmed_session.get('progress_message')!r}",
-        flush=True,
-    )
+    summarize_session("plan-confirmed", confirmed_session)
     return True
+
+
+async def continue_turn(
+    client: httpx.AsyncClient,
+    base_url: str,
+    session_id: str,
+    prompt: str,
+) -> dict[str, Any]:
+    response = await client.post(
+        f"{base_url}/api/caption/assistant/session/{session_id}/message",
+        json={"prompt": prompt},
+    )
+    response.raise_for_status()
+    session = response.json()
+    summarize_session("followup-queued", session)
+    return session
+
+
+async def consume_turn_until_terminal(
+    client: httpx.AsyncClient,
+    base_url: str,
+    session_id: str,
+    event_timeout: float,
+    overall_timeout: float,
+    turn_label: str,
+) -> dict[str, Any]:
+    confirmed_plan = False
+    event_count = 0
+    started_at = time.monotonic()
+    last_event_at = started_at
+    event_name = "message"
+    data_lines: list[str] = []
+    terminal_statuses = {"completed", "error"}
+
+    stream_url = f"{base_url}/api/caption/assistant/session/{session_id}/events"
+    print(f"[{turn_label}] sse connect {stream_url}", flush=True)
+
+    async with client.stream("GET", stream_url) as stream:
+        stream.raise_for_status()
+        lines = stream.aiter_lines()
+        while True:
+            if time.monotonic() - started_at > overall_timeout:
+                raise TimeoutError(f"{turn_label} overall timeout {overall_timeout}s exceeded")
+
+            line = await get_next_line(lines, event_timeout)
+            if line.startswith(":"):
+                continue
+
+            if line == "":
+                if not data_lines:
+                    event_name = "message"
+                    continue
+
+                raw_data = "\n".join(data_lines)
+                data_lines = []
+                now = time.monotonic()
+                gap = now - last_event_at
+                last_event_at = now
+                event_count += 1
+
+                try:
+                    payload = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    payload = {"raw": raw_data}
+
+                status = payload.get("status")
+                progress = payload.get("progress_message") or payload.get("message")
+                artifact = payload.get("artifact")
+                version = payload.get("version")
+                print(
+                    f"[{turn_label}] "
+                    f"#{event_count} +{gap:.1f}s "
+                    f"event={event_name} "
+                    f"version={version} "
+                    f"status={status or '-'} "
+                    f"artifact={artifact or '-'} "
+                    f"progress={progress!r}",
+                    flush=True,
+                )
+
+                if isinstance(payload, dict):
+                    confirmed_plan = await confirm_plan_once(
+                        client,
+                        base_url,
+                        payload,
+                        confirmed_plan,
+                    )
+                    if payload.get("status") in terminal_statuses:
+                        final_session = await fetch_session(client, base_url, session_id)
+                        summarize_session(f"{turn_label}-final", final_session)
+                        return final_session
+
+                event_name = "message"
+                continue
+
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").lstrip())
 
 
 async def run_flow(args: argparse.Namespace) -> int:
@@ -113,106 +230,44 @@ async def run_flow(args: argparse.Namespace) -> int:
         response.raise_for_status()
         session = response.json()
         session_id = session["session_id"]
-        print(
-            "[create] "
-            f"session_id={session_id} "
-            f"status={session.get('status')} "
-            f"progress={session.get('progress_message')!r}",
-            flush=True,
-        )
+        summarize_session("created", session)
 
-        confirmed_plan = False
-        event_count = 0
-        started_at = time.monotonic()
-        last_event_at = started_at
-        event_name = "message"
-        data_lines: list[str] = []
-
-        stream_url = f"{base_url}/api/caption/assistant/session/{session_id}/events"
-        print(f"[sse] connecting {stream_url}", flush=True)
+        followup_prompts = args.followup_prompts or [DEFAULT_FOLLOWUP_PROMPT]
 
         try:
-            async with client.stream("GET", stream_url) as stream:
-                stream.raise_for_status()
-                lines = stream.aiter_lines()
-                while True:
-                    if time.monotonic() - started_at > args.overall_timeout:
-                        raise TimeoutError(f"overall timeout {args.overall_timeout}s exceeded")
+            latest_session = await consume_turn_until_terminal(
+                client,
+                base_url,
+                session_id,
+                args.event_timeout,
+                args.overall_timeout,
+                "turn-1",
+            )
+            if latest_session.get("status") != "completed":
+                return 1
 
-                    line = await get_next_line(lines, args.event_timeout)
-                    if line.startswith(":"):
-                        continue
+            for turn_index, prompt in enumerate(followup_prompts, start=2):
+                print(f"[turn-{turn_index}] prompt={prompt!r}", flush=True)
+                queued_session = await continue_turn(client, base_url, session_id, prompt)
+                if queued_session.get("status") == "error":
+                    return 1
+                latest_session = await consume_turn_until_terminal(
+                    client,
+                    base_url,
+                    session_id,
+                    args.event_timeout,
+                    args.overall_timeout,
+                    f"turn-{turn_index}",
+                )
+                if latest_session.get("status") != "completed":
+                    return 1
 
-                    if line == "":
-                        if not data_lines:
-                            event_name = "message"
-                            continue
-
-                        raw_data = "\n".join(data_lines)
-                        data_lines = []
-                        now = time.monotonic()
-                        gap = now - last_event_at
-                        last_event_at = now
-                        event_count += 1
-
-                        try:
-                            payload = json.loads(raw_data)
-                        except json.JSONDecodeError:
-                            payload = {"raw": raw_data}
-
-                        status = payload.get("status")
-                        progress = payload.get("progress_message") or payload.get("message")
-                        artifact = payload.get("artifact")
-                        print(
-                            "[sse] "
-                            f"#{event_count} +{gap:.1f}s "
-                            f"event={event_name} "
-                            f"status={status or '-'} "
-                            f"artifact={artifact or '-'} "
-                            f"progress={progress!r}",
-                            flush=True,
-                        )
-
-                        if isinstance(payload, dict):
-                            confirmed_plan = await confirm_plan_once(
-                                client,
-                                base_url,
-                                payload,
-                                confirmed_plan,
-                            )
-                            if payload.get("status") in {"completed", "error"}:
-                                final_session = await fetch_session(client, base_url, session_id)
-                                print(
-                                    "[final] "
-                                    f"status={final_session.get('status')} "
-                                    f"progress={final_session.get('progress_message')!r} "
-                                    f"error={final_session.get('error_message')!r} "
-                                    f"messages={len(final_session.get('messages') or [])} "
-                                    f"events={len(final_session.get('execution_events') or [])}",
-                                    flush=True,
-                                )
-                                return 0 if final_session.get("status") == "completed" else 1
-
-                        event_name = "message"
-                        continue
-
-                    if line.startswith("event:"):
-                        event_name = line.removeprefix("event:").strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line.removeprefix("data:").lstrip())
+            return 0
 
         except (TimeoutError, asyncio.TimeoutError, EOFError) as exc:
             latest = await fetch_session(client, base_url, session_id)
             print(f"[timeout] {exc}", flush=True)
-            print(
-                "[latest] "
-                f"status={latest.get('status')} "
-                f"progress={latest.get('progress_message')!r} "
-                f"error={latest.get('error_message')!r} "
-                f"messages={len(latest.get('messages') or [])} "
-                f"events={len(latest.get('execution_events') or [])}",
-                flush=True,
-            )
+            summarize_session("latest", latest)
             return 1
 
 

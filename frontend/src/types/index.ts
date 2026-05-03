@@ -95,6 +95,7 @@ export interface CaptionAssistantSession {
     | 'error';
   progress_message: string;
   error_message: string;
+  version: number;
   created_at: string;
   updated_at: string;
 }
@@ -105,31 +106,7 @@ export interface CaptionSessionEvent {
     session_id: string;
     status: string;
     message: string;
+    version: number;
     updated_at: string;
   };
-}
-
-// 多Agent讨论相关类型
-export interface DiscussionRequest {
-  topic: string;
-  requirements: string;
-}
-
-export interface DiscussionResponse {
-  discussion: string[];
-  topic: string;
-  requirements: string;
-  final_script: string;
-}
-
-// 市场调研相关类型
-export interface ResearchRequest {
-  product: string;
-  targetMarket: string;
-}
-
-export interface ResearchResponse {
-  market_trends: string;
-  competitor_analysis: string;
-  strategy_suggestions: string;
 }

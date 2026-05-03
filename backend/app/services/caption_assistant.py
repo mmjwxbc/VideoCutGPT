@@ -17,7 +17,7 @@ from app.core.utils import extract_keyframes, select_keyframes_for_analysis
 
 
 def _utcnow() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.utcnow().isoformat(timespec="microseconds") + "Z"
 
 
 @dataclass
@@ -114,6 +114,7 @@ class CaptionSession:
     status: str = "idle"
     progress_message: str = ""
     error_message: str = ""
+    version: int = 0
     created_at: str = field(default_factory=_utcnow)
     updated_at: str = field(default_factory=_utcnow)
 
@@ -125,6 +126,7 @@ class CaptionSessionStore:
 
     def save(self, session: CaptionSession) -> None:
         with self._lock:
+            session.version += 1
             self._sessions[session.session_id] = session
 
     def get(self, session_id: str) -> CaptionSession:
@@ -271,15 +273,10 @@ class CaptionConversationAssistant:
         try:
             initial_snapshot = self._serialize(session)
             yield {"event": "snapshot", "data": initial_snapshot}
-            if initial_snapshot["status"] in {"completed", "error"}:
-                return
             while True:
                 try:
                     message = await asyncio.wait_for(queue.get(), timeout=15)
                     yield message
-                    data = message.get("data", {})
-                    if isinstance(data, dict) and data.get("status") in {"completed", "error"}:
-                        return
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": {"session_id": session_id, "ts": _utcnow()}}
         finally:
@@ -745,7 +742,15 @@ class CaptionConversationAssistant:
         session.execution_events.append(item)
         session.updated_at = _utcnow()
         self.store.save(session)
-        self.events.publish(session.session_id, "execution_event", {"session_id": session.session_id, **asdict(item)})
+        self.events.publish(
+            session.session_id,
+            "execution_event",
+            {
+                "session_id": session.session_id,
+                "version": session.version,
+                **asdict(item),
+            },
+        )
 
     async def _publish_artifact_updated(
         self,
@@ -769,6 +774,7 @@ class CaptionConversationAssistant:
                 "artifact": artifact,
                 "value": value,
                 "updated_at": session.updated_at,
+                "version": session.version,
                 "summary": summary,
             },
         )
@@ -791,6 +797,7 @@ class CaptionConversationAssistant:
                 "content": content,
                 "delta": delta,
                 "updated_at": session.updated_at,
+                "version": session.version,
             },
         )
 
@@ -812,6 +819,7 @@ class CaptionConversationAssistant:
                 "content": content,
                 "delta": delta,
                 "updated_at": session.updated_at,
+                "version": session.version,
             },
         )
 
@@ -832,6 +840,7 @@ class CaptionConversationAssistant:
                 "content": content,
                 "delta": delta,
                 "updated_at": session.updated_at,
+                "version": session.version,
             },
         )
 
@@ -954,7 +963,6 @@ class CaptionConversationAssistant:
             session.english_title = content
         elif artifact == "video_summary":
             session.video_summary = content
-        await self._publish_artifact_chunk(session, artifact, content, delta)
 
     async def _fail_session(self, session_id: str, exc: Exception) -> None:
         session = self.store.get(session_id)
@@ -999,6 +1007,7 @@ class CaptionConversationAssistant:
                 "status": status,
                 "message": message,
                 "updated_at": session.updated_at,
+                "version": session.version,
             },
         )
 
@@ -1277,6 +1286,7 @@ class CaptionConversationAssistant:
                     "artifact": "frame_analyses",
                     "value": session.frame_analyses,
                     "updated_at": session.updated_at,
+                    "version": session.version,
                     "summary": f"关键帧 {index}/{max(total, 1)} 分析完成。",
                 },
             )
@@ -1611,6 +1621,7 @@ class CaptionConversationAssistant:
             "status": session.status,
             "progress_message": session.progress_message,
             "error_message": session.error_message,
+            "version": session.version,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         }

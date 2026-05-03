@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Clapperboard, Compass, MessagesSquare } from 'lucide-react';
+import { ArrowRight, Clapperboard } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Link } from 'react-router-dom';
 
@@ -12,24 +12,6 @@ const FEATURE_CARDS = [
     icon: <Clapperboard className="h-6 w-6" />,
     accent:
       'from-sky-500/15 via-blue-500/10 to-transparent text-sky-700',
-  },
-  {
-    title: '多 Agent 讨论',
-    description:
-      '让不同角色围绕宣传目标讨论，沉淀可执行的内容方向和脚本骨架。',
-    href: '/multi-agent',
-    icon: <MessagesSquare className="h-6 w-6" />,
-    accent:
-      'from-emerald-500/15 via-teal-500/10 to-transparent text-emerald-700',
-  },
-  {
-    title: 'Deep Research',
-    description:
-      '汇总市场趋势、竞品信息和切入建议，为出海选题和卖点排序提供依据。',
-    href: '/deep-research',
-    icon: <Compass className="h-6 w-6" />,
-    accent:
-      'from-amber-500/15 via-orange-500/10 to-transparent text-amber-700',
   },
 ];
 
@@ -52,7 +34,7 @@ const Home: React.FC = () => {
               为电商出海团队做一套真正可用的 AI 创作工作台
             </h1>
             <p className="mt-5 max-w-2xl text-sm leading-8 text-slate-600 md:text-base">
-              不只是几个调用模型的按钮，而是把字幕生成、协同讨论和调研洞察组织成清晰的工作流界面。字幕模块已重构为对话式创作体验。
+              不是几个分散的模型按钮，而是围绕字幕创作整理出一条清晰工作流。现在保留的核心能力是对话式字幕工作台。
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button asChild size="lg">
@@ -60,9 +42,6 @@ const Home: React.FC = () => {
                   进入字幕工作台
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
-              </Button>
-              <Button asChild variant="outline" size="lg">
-                <Link to="/deep-research">查看研究模块</Link>
               </Button>
             </div>
           </div>
@@ -81,7 +60,7 @@ const Home: React.FC = () => {
           </div>
         </section>
 
-        <section className="mt-10 grid gap-5 md:grid-cols-3">
+        <section className="mt-10 grid gap-5 md:grid-cols-1">
           {FEATURE_CARDS.map((card) => (
             <Link
               key={card.title}
