@@ -96,6 +96,7 @@ export const getWorkflowRows = (
     { key: 'editing_plan', item: workflowState.editing_plan },
     { key: 'english_title', item: workflowState.english_title },
     { key: 'tags', item: workflowState.tags },
+    { key: 'edited_video', item: workflowState.edited_video },
   ];
 };
 
@@ -207,47 +208,68 @@ export const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
   );
 };
 
-const renderTurnEvent = (event: TurnEventItem, index: number) => {
+const TurnEventDisclosure: React.FC<{
+  title: string;
+  timestamp: string;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  defaultOpen?: boolean;
+}> = ({
+  title,
+  timestamp,
+  children,
+  icon,
+  defaultOpen = false,
+}) => (
+  <details
+    open={defaultOpen}
+    className="group rounded-[14px] border border-slate-800 bg-[#1b1b1b]"
+  >
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        {icon}
+        <p className="truncate text-[12px] font-medium text-slate-100">{title}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="text-[10px] text-slate-500">{formatTimestamp(timestamp)}</span>
+        <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
+      </div>
+    </summary>
+    <div className="border-t border-slate-800 px-3 py-2.5">
+      {children}
+    </div>
+  </details>
+);
+
+const renderTurnEvent = (event: TurnEventItem, index: number, defaultOpen: boolean) => {
   if (event.type === 'tool_call') {
     return (
-      <div
+      <TurnEventDisclosure
         key={`${event.created_at}-${index}`}
-        className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5"
+        title={event.tool_name}
+        timestamp={event.created_at}
+        icon={<Wrench className="h-3.5 w-3.5 text-slate-400" />}
+        defaultOpen={defaultOpen}
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <Wrench className="h-3.5 w-3.5 text-slate-400" />
-            <p className="truncate text-[12px] font-medium text-slate-100">
-              {event.tool_name}
-            </p>
-          </div>
-          <span className="shrink-0 text-[10px] text-slate-500">
-            {formatTimestamp(event.created_at)}
-          </span>
-        </div>
-        <pre className="mt-2 whitespace-pre-wrap break-words rounded-[12px] border border-slate-800 bg-[#121212] px-3 py-2 text-[11px] leading-5 text-slate-400">
+        <pre className="whitespace-pre-wrap break-words rounded-[12px] border border-slate-800 bg-[#121212] px-3 py-2 text-[11px] leading-5 text-slate-400">
           {event.arguments || '{}'}
         </pre>
-      </div>
+      </TurnEventDisclosure>
     );
   }
 
   if (event.type === 'thought') {
     return (
-      <div
+      <TurnEventDisclosure
         key={`${event.created_at}-${index}`}
-        className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5"
+        title="思考过程"
+        timestamp={event.created_at}
+        defaultOpen={defaultOpen}
       >
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[12px] font-medium text-slate-100">思考过程</p>
-          <span className="shrink-0 text-[10px] text-slate-500">
-            {formatTimestamp(event.created_at)}
-          </span>
-        </div>
-        <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+        <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
           {event.content}
         </p>
-      </div>
+      </TurnEventDisclosure>
     );
   }
 
@@ -260,6 +282,7 @@ export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
 }) => {
   const processEvents = turn.events.filter((event) => event.type !== 'final_text');
   const finalEvent = turn.events.find((event) => event.type === 'final_text');
+  const latestEventIndex = processEvents.length - 1;
 
   return (
     <article className="flex w-full items-start gap-2.5 justify-start pr-3 sm:pr-8">
@@ -285,7 +308,9 @@ export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
 
         {processEvents.length ? (
           <div className="space-y-2.5">
-            {processEvents.map((event, index) => renderTurnEvent(event, index))}
+            {processEvents.map((event, index) =>
+              renderTurnEvent(event, index, isActive && index === latestEventIndex),
+            )}
           </div>
         ) : isActive ? (
           <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5 text-[12px] text-slate-400">

@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     
     # File Upload Config
     upload_dir: str = "./uploads"
+    export_dir: str = "./exports"
     max_upload_size: int = 50000000
+    ffmpeg_execution_timeout_seconds: int = 600
     
     class Config:
         env_file = ".env"
@@ -56,3 +58,5 @@ if settings.multimodal_enable_thinking is None:
 # Create upload directory if it doesn't exist
 if not os.path.exists(settings.upload_dir):
     os.makedirs(settings.upload_dir)
+if not os.path.exists(settings.export_dir):
+    os.makedirs(settings.export_dir)

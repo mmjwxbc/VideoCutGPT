@@ -1,8 +1,10 @@
 import React from 'react';
-import { Sparkles } from 'lucide-react';
+import { ChevronDown, Download, Sparkles } from 'lucide-react';
 
 import { Panel, WorkflowStateRow, WorkflowStepCard, getWorkflowStatusLabel, getWorkflowStatusTone } from './shared';
 import { CaptionAssistantSession } from '../../types';
+import { Button } from '../ui/button';
+import { captionSessionExportedVideoUrl } from '../../api/api';
 
 interface WorkspaceSidebarProps {
   mobilePane: 'chat' | 'workspace';
@@ -11,6 +13,35 @@ interface WorkspaceSidebarProps {
   workflowRows: WorkflowStateRow[];
 }
 
+interface ArtifactCardProps {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  accentClassName?: string;
+}
+
+const ArtifactCard: React.FC<ArtifactCardProps> = ({
+  title,
+  children,
+  defaultOpen = false,
+  accentClassName = 'text-slate-500',
+}) => (
+  <details
+    open={defaultOpen}
+    className="group rounded-[14px] border border-slate-800 bg-[#111111]"
+  >
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+      <div className={`text-[11px] uppercase tracking-[0.18em] ${accentClassName}`}>
+        {title}
+      </div>
+      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500 transition group-open:rotate-180" />
+    </summary>
+    <div className="border-t border-slate-800 px-3 py-2">
+      {children}
+    </div>
+  </details>
+);
+
 const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   mobilePane,
   session,
@@ -18,13 +49,20 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   workflowRows,
 }) => {
   const state = session?.global_editing_state;
+  const editedVideoState = state?.workflow.edited_video;
+  const showEditedVideoCard = Boolean(
+    state?.edited_video.download_url ||
+      state?.edited_video.error_message ||
+      editedVideoState?.requested,
+  );
   const hasArtifacts = Boolean(
     state?.subtitle_draft.trim() ||
       state?.editing_plan.trim() ||
       state?.english_title.trim() ||
       state?.tags.length ||
       state?.video_summary.trim() ||
-      state?.frame_analyses.length,
+      state?.frame_analyses.length ||
+      showEditedVideoCard,
   );
 
   return (
@@ -111,60 +149,42 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                 >
                   <div className="space-y-2 text-[12px] leading-5 text-slate-400">
                     {state.subtitle_draft.trim() ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          字幕草稿
-                        </div>
+                      <ArtifactCard title="字幕草稿" defaultOpen>
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
                           {state.subtitle_draft.trim()}
                         </pre>
-                      </div>
+                      </ArtifactCard>
                     ) : null}
                     {state.editing_plan.trim() ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          剪辑方案
-                        </div>
+                      <ArtifactCard title="剪辑方案">
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
                           {state.editing_plan.trim()}
                         </pre>
-                      </div>
+                      </ArtifactCard>
                     ) : null}
                     {state.english_title.trim() ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          英文标题
-                        </div>
+                      <ArtifactCard title="英文标题">
                         <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
                           {state.english_title.trim()}
                         </p>
-                      </div>
+                      </ArtifactCard>
                     ) : null}
                     {state.tags.length ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          标签
-                        </div>
+                      <ArtifactCard title="标签">
                         <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
                           {state.tags.join(', ')}
                         </p>
-                      </div>
+                      </ArtifactCard>
                     ) : null}
                     {state.video_summary.trim() ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          视频摘要
-                        </div>
+                      <ArtifactCard title="视频摘要">
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
                           {state.video_summary.trim()}
                         </pre>
-                      </div>
+                      </ArtifactCard>
                     ) : null}
                     {state.frame_analyses.length ? (
-                      <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                          关键帧理解
-                        </div>
+                      <ArtifactCard title="关键帧理解">
                         <div className="mt-1 space-y-2">
                           {state.frame_analyses.slice(0, 6).map((item, index) => (
                             <p
@@ -175,7 +195,69 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                             </p>
                           ))}
                         </div>
-                      </div>
+                      </ArtifactCard>
+                    ) : null}
+                    {showEditedVideoCard ? (
+                      <ArtifactCard
+                        title="导出成片"
+                        accentClassName={
+                          state.edited_video.download_url
+                            ? 'text-emerald-300/80'
+                            : state.edited_video.error_message
+                              ? 'text-rose-300/80'
+                              : 'text-slate-400'
+                        }
+                      >
+                        <div className="mt-1 space-y-2">
+                          <p className="break-words text-[12px] text-slate-200">
+                            {state.edited_video.file_name || '暂未生成导出文件'}
+                          </p>
+                          {state.edited_video.summary ? (
+                            <p className="whitespace-pre-wrap break-words text-[12px] text-slate-400">
+                              {state.edited_video.summary}
+                            </p>
+                          ) : null}
+                          {state.edited_video.error_message ? (
+                            <div className="rounded-[12px] border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-[12px] text-rose-200">
+                              {state.edited_video.error_message}
+                            </div>
+                          ) : null}
+                          {state.edited_video.size_bytes > 0 ? (
+                            <p className="text-[11px] text-slate-500">
+                              {(state.edited_video.size_bytes / (1024 * 1024)).toFixed(2)} MB
+                            </p>
+                          ) : null}
+                          {state.edited_video.command ? (
+                            <div className="rounded-[12px] border border-slate-800 bg-[#0b0b0b] px-3 py-2">
+                              <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                FFmpeg Command
+                              </div>
+                              <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[11px] leading-5 text-slate-400">
+                                {state.edited_video.command}
+                              </pre>
+                            </div>
+                          ) : null}
+                          {session && state.edited_video.download_url ? (
+                            <Button
+                              asChild
+                              variant="secondary"
+                              className="w-full justify-center gap-2"
+                            >
+                              <a
+                                href={captionSessionExportedVideoUrl(session.session_id)}
+                                download={state.edited_video.file_name || 'exported-video.mp4'}
+                              >
+                                <Download className="h-4 w-4" />
+                                导出剪辑视频
+                              </a>
+                            </Button>
+                          ) : (
+                            <div className="rounded-[12px] border border-dashed border-slate-800 bg-[#0b0b0b] px-3 py-2 text-[11px] text-slate-500">
+                              当前还没有可下载成片。请先修复导出参数或重新执行导出。
+                            </div>
+                          )}
+                        </div>
+                      </ArtifactCard>
                     ) : null}
                     {!hasArtifacts ? (
                       <div className="rounded-[14px] border border-dashed border-slate-800 bg-[#111111] px-3 py-2 text-[12px] text-slate-500">

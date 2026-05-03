@@ -1,9 +1,10 @@
 import json
 import os
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -35,9 +36,9 @@ def _format_sse(event: str, data: dict) -> str:
 
 @router.post("/generate")
 async def generate_caption(
-    video: UploadFile = File(...),
-    platform: str = Form(...),
-    product_manual: str = Form(None),
+    video: Annotated[UploadFile, File(...)],
+    platform: Annotated[str, Form(...)],
+    product_manual: Annotated[str | None, Form()] = None,
 ):
     """
     兼容旧接口，等待任务完成后返回一次性结果。
@@ -58,15 +59,16 @@ async def generate_caption(
         "keyframes": editing_state["keyframes"],
         "session_id": completed["session_id"],
         "response": latest_turn.get("final_text", ""),
+        "exported_video": editing_state.get("edited_video"),
     }
 
 
 @router.post("/assistant/session")
 async def create_caption_session(
-    video: UploadFile = File(...),
-    platform: str = Form(...),
-    prompt: str = Form(...),
-    product_manual: str = Form(None),
+    video: Annotated[UploadFile, File(...)],
+    platform: Annotated[str, Form(...)],
+    prompt: Annotated[str, Form(...)],
+    product_manual: Annotated[str | None, Form()] = None,
 ):
     """
     创建字幕与剪辑助手会话，并异步开始处理。
@@ -128,3 +130,19 @@ async def get_caption_session(session_id: str):
         return caption_assistant.get_session(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/assistant/session/{session_id}/exported-video")
+async def download_exported_video(session_id: str):
+    try:
+        video_path = caption_assistant.get_exported_video_path(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"exported video not found: {exc}") from exc
+
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=os.path.basename(video_path),
+    )

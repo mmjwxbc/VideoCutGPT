@@ -4,6 +4,7 @@ export interface CaptionResponse {
   keyframes?: Keyframe[];
   session_id?: string;
   response?: string;
+  exported_video?: EditedVideoArtifact;
 }
 
 export interface Keyframe {
@@ -31,6 +32,17 @@ export interface EditingWorkflowState {
   editing_plan: WorkflowArtifactState;
   english_title: WorkflowArtifactState;
   tags: WorkflowArtifactState;
+  edited_video: WorkflowArtifactState;
+}
+
+export interface EditedVideoArtifact {
+  file_name: string;
+  download_url: string;
+  command: string;
+  summary: string;
+  error_message: string;
+  size_bytes: number;
+  created_at: string;
 }
 
 export interface GlobalEditingState {
@@ -42,6 +54,7 @@ export interface GlobalEditingState {
   editing_plan: string;
   english_title: string;
   tags: string[];
+  edited_video: EditedVideoArtifact;
   workflow: EditingWorkflowState;
   updated_at: string;
 }

@@ -9,6 +9,9 @@ const api = axios.create({
 export const captionSessionEventsUrl = (sessionId: string) =>
   `/api/caption/assistant/session/${sessionId}/events`;
 
+export const captionSessionExportedVideoUrl = (sessionId: string) =>
+  `/api/caption/assistant/session/${sessionId}/exported-video`;
+
 // 字幕生成
 export const generateCaption = async (
   video: File,

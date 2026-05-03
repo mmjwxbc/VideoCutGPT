@@ -75,7 +75,7 @@ const CaptionGenerator: React.FC = () => {
     });
     setComposerMode('followup');
     setLoading(nextSession.status === 'processing');
-    setError(nextSession.status === 'error' ? nextSession.error_message || '处理失败，请重试' : '');
+    setError('');
   }, []);
 
   const reconcileTerminalSession = useCallback(async (sessionId: string) => {
