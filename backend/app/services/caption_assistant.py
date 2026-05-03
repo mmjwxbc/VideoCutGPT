@@ -258,6 +258,164 @@ class CaptionSession:
     updated_at: str = field(default_factory=_utcnow)
 
 
+@dataclass
+class CaptionToolContext:
+    assistant: "CaptionConversationAssistant"
+    session: CaptionSession
+    turn: AgentTurn
+    working_state: GlobalEditingState
+    user_prompt: str
+
+
+class CaptionAssistantTool:
+    name: str = ""
+    description: str = ""
+
+    def __init__(self, context: CaptionToolContext) -> None:
+        self.context = context
+
+    async def run(self, action_input: str) -> str:
+        await self.context.assistant._append_turn_event(
+            self.context.session,
+            self.context.turn,
+            TurnEventItem(
+                type="tool_call",
+                tool_name=self.name,
+                arguments=action_input.strip() or "{}",
+            ),
+        )
+        return await self.execute(action_input)
+
+    async def execute(self, action_input: str) -> str:
+        raise NotImplementedError
+
+    def to_spec(self) -> ToolSpec:
+        return ToolSpec(name=self.name, description=self.description, run=self.run)
+
+
+class RunKeyframeVisionSubagentTool(CaptionAssistantTool):
+    name = "run_keyframe_vision_subagent"
+    description = "调用关键帧视觉子代理：提取关键帧、逐帧调用多模态大模型分析图片，并汇总视频摘要。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._run_keyframe_vision_subagent(
+            self.context.session,
+            self.context.working_state,
+        )
+
+
+class ReadVideoContextTool(CaptionAssistantTool):
+    name = "read_video_context"
+    description = "读取视频关键帧分析和视频摘要。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_video_context(self.context.working_state)
+
+
+class ReadManualTool(CaptionAssistantTool):
+    name = "read_manual"
+    description = "读取产品说明书。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_manual(self.context.session)
+
+
+class ReadSkillFfmpegUsageTool(CaptionAssistantTool):
+    name = "read_skill_ffmpeg_usage"
+    description = (
+        "读取 skills/ffmpeg-usage/SKILL.md。"
+        "当用户要求输出 ffmpeg 命令、字幕烧录、裁剪拼接、比例调整、平台导出规范、"
+        "压缩优化或任何可执行音视频处理步骤时，应优先调用此工具。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_skill_ffmpeg_usage()
+
+
+class ReadCurrentArtifactsTool(CaptionAssistantTool):
+    name = "read_current_artifacts"
+    description = "读取当前字幕、剪辑方案、标题和标签。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_current_artifacts(self.context.working_state)
+
+
+class WriteSubtitlesTool(CaptionAssistantTool):
+    name = "write_subtitles"
+    description = "生成或更新字幕草稿。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_write_subtitles(
+            self.context.session,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class WriteEditPlanTool(CaptionAssistantTool):
+    name = "write_edit_plan"
+    description = "生成或更新剪辑方案。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_write_edit_plan(
+            self.context.session,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class WriteTitleTool(CaptionAssistantTool):
+    name = "write_title"
+    description = "生成或更新英文标题。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_write_title(
+            self.context.session,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class WriteTagsTool(CaptionAssistantTool):
+    name = "write_tags"
+    description = "生成或更新标签。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_write_tags(
+            self.context.session,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class RunBashFfmpegTool(CaptionAssistantTool):
+    name = "run_bash_ffmpeg"
+    description = (
+        "执行单条 ffmpeg bash 命令并导出视频。"
+        "必须先读取 ffmpeg skill，再传入单条 ffmpeg 命令模板。"
+        "输入视频路径与输出文件路径由服务端自动注入；若要烧录字幕，使用 {{subtitle_file}}。"
+        "如果参数不合法或执行失败，工具会返回错误观察结果，代理必须根据错误信息修正后重试。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_run_bash_ffmpeg(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
 class CaptionSessionStore:
     def __init__(self) -> None:
         self._sessions: Dict[str, CaptionSession] = {}
@@ -625,139 +783,27 @@ class CaptionConversationAssistant:
         user_prompt: str,
     ) -> ToolRegistry:
         registry = ToolRegistry()
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="run_keyframe_vision_subagent",
-                description="调用关键帧视觉子代理：提取关键帧、逐帧调用多模态大模型分析图片，并汇总视频摘要。",
-                run=lambda _input: self._run_keyframe_vision_subagent(session, working_state),
-            )
+        context = CaptionToolContext(
+            assistant=self,
+            session=session,
+            turn=turn,
+            working_state=working_state,
+            user_prompt=user_prompt,
         )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="read_video_context",
-                description="读取视频关键帧分析和视频摘要。",
-                run=lambda _input: self._tool_read_video_context(working_state),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="read_manual",
-                description="读取产品说明书。",
-                run=lambda _input: self._tool_read_manual(session),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="read_skill_ffmpeg_usage",
-                description=(
-                    "读取 skills/ffmpeg-usage/SKILL.md。"
-                    "当用户要求输出 ffmpeg 命令、字幕烧录、裁剪拼接、比例调整、平台导出规范、"
-                    "压缩优化或任何可执行音视频处理步骤时，应优先调用此工具。"
-                ),
-                run=lambda _input: self._tool_read_skill_ffmpeg_usage(),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="read_current_artifacts",
-                description="读取当前字幕、剪辑方案、标题和标签。",
-                run=lambda _input: self._tool_read_current_artifacts(working_state),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="write_subtitles",
-                description="生成或更新字幕草稿。",
-                run=lambda action_input: self._tool_write_subtitles(
-                    session, working_state, user_prompt, action_input
-                ),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="write_edit_plan",
-                description="生成或更新剪辑方案。",
-                run=lambda action_input: self._tool_write_edit_plan(
-                    session, working_state, user_prompt, action_input
-                ),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="write_title",
-                description="生成或更新英文标题。",
-                run=lambda action_input: self._tool_write_title(
-                    session, working_state, user_prompt, action_input
-                ),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="write_tags",
-                description="生成或更新标签。",
-                run=lambda action_input: self._tool_write_tags(
-                    session, working_state, user_prompt, action_input
-                ),
-            )
-        )
-        registry.register(
-            self._build_tool_spec(
-                session,
-                turn,
-                name="run_bash_ffmpeg",
-                description=(
-                    "执行单条 ffmpeg bash 命令并导出视频。"
-                    "必须先读取 ffmpeg skill，再传入单条 ffmpeg 命令模板。"
-                    "输入视频路径与输出文件路径由服务端自动注入；若要烧录字幕，使用 {{subtitle_file}}。"
-                    "如果参数不合法或执行失败，工具会返回错误观察结果，代理必须根据错误信息修正后重试。"
-                ),
-                run=lambda action_input: self._tool_run_bash_ffmpeg(
-                    session, turn, working_state, user_prompt, action_input
-                ),
-            )
-        )
+        for tool in [
+            RunKeyframeVisionSubagentTool(context),
+            ReadVideoContextTool(context),
+            ReadManualTool(context),
+            ReadSkillFfmpegUsageTool(context),
+            ReadCurrentArtifactsTool(context),
+            WriteSubtitlesTool(context),
+            WriteEditPlanTool(context),
+            WriteTitleTool(context),
+            WriteTagsTool(context),
+            RunBashFfmpegTool(context),
+        ]:
+            registry.register(tool.to_spec())
         return registry
-
-    def _build_tool_spec(
-        self,
-        session: CaptionSession,
-        turn: AgentTurn,
-        *,
-        name: str,
-        description: str,
-        run: Any,
-    ) -> ToolSpec:
-        async def wrapped(action_input: str) -> str:
-            await self._append_turn_event(
-                session,
-                turn,
-                TurnEventItem(
-                    type="tool_call",
-                    tool_name=name,
-                    arguments=action_input.strip() or "{}",
-                ),
-            )
-            return await run(action_input)
-
-        return ToolSpec(name=name, description=description, run=wrapped)
 
     async def _run_keyframe_vision_subagent(
         self,
