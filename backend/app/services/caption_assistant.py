@@ -686,6 +686,7 @@ class RenderClipSegmentTool(CaptionAssistantTool):
     description = (
         "逐个渲染单个视频片段。"
         "action_input 推荐为 JSON：{\"segment_id\":\"seg_1\",\"speed\":1.25,\"drop_audio\":false,\"notes\":\"根据上一条错误修正\"}。"
+        "如果发生 FFmpeg 报错（如奇数分辨率、色彩空间问题），可以通过传入 vf_override 覆盖视频滤镜，或 af_override 覆盖音频滤镜来尝试自愈。"
         "如果不传 segment_id，服务端会自动选择下一个待处理片段。"
     )
 
@@ -1375,6 +1376,8 @@ class CaptionConversationAssistant:
         segment_id = str(payload.get("segment_id", "")).strip() if isinstance(payload, dict) else ""
         drop_audio = bool(payload.get("drop_audio")) if isinstance(payload, dict) else False
         speed_override = payload.get("speed") if isinstance(payload, dict) else None
+        vf_override = str(payload.get("vf_override", "")).strip() if isinstance(payload, dict) else ""
+        af_override = str(payload.get("af_override", "")).strip() if isinstance(payload, dict) else ""
         notes = str(payload.get("notes", "")).strip() if isinstance(payload, dict) else ""
 
         target_segment = None
@@ -1415,6 +1418,8 @@ class CaptionConversationAssistant:
             aspect_ratio=decision.aspect_ratio,
             drop_audio=drop_audio,
             speed_override=float(speed_override) if speed_override is not None else None,
+            vf_override=vf_override or None,
+            af_override=af_override or None,
         )
         rendered.command = shlex.join(command_args)
         try:
@@ -1493,11 +1498,13 @@ class CaptionConversationAssistant:
             "medium",
             "-crf",
             "23",
+            "-video_track_timescale",
+            "90000",
         ]
         if drop_audio:
             merge_args.extend(["-an"])
         else:
-            merge_args.extend(["-c:a", "aac", "-b:a", "128k"])
+            merge_args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"])
         merge_args.append(merged_path)
 
         try:
@@ -2113,6 +2120,8 @@ class CaptionConversationAssistant:
         aspect_ratio: str,
         drop_audio: bool,
         speed_override: float | None = None,
+        vf_override: str | None = None,
+        af_override: str | None = None,
     ) -> List[str]:
         width, height = self._resolution_for_aspect_ratio(aspect_ratio)
         start = self._timestamp_to_seconds(segment.source_start)
@@ -2122,9 +2131,13 @@ class CaptionConversationAssistant:
         speed = max(0.5, min(2.0, float(speed_override if speed_override is not None else (segment.speed or 1.0))))
         setpts = "PTS-STARTPTS" if abs(speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{speed}"
         vf = (
-            f"setpts={setpts},"
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            vf_override.strip()
+            if vf_override and vf_override.strip()
+            else (
+                f"setpts={setpts},"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            )
         )
         args = [
             "ffmpeg",
@@ -2143,15 +2156,25 @@ class CaptionConversationAssistant:
             "medium",
             "-crf",
             "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-video_track_timescale",
+            "90000",
         ]
         has_audio = self._video_has_audio_stream(session.video_path)
         if drop_audio or not has_audio:
             args.extend(["-an"])
         else:
             args.extend(["-map", "0:v:0", "-map", "0:a:0"])
-            if abs(speed - 1.0) >= 1e-6:
-                args.extend(["-af", ",".join(self._build_atempo_filters(speed))])
-            args.extend(["-c:a", "aac", "-b:a", "128k", "-shortest"])
+            if af_override and af_override.strip():
+                audio_filter = af_override.strip()
+            elif abs(speed - 1.0) >= 1e-6:
+                audio_filter = ",".join(self._build_atempo_filters(speed))
+            else:
+                audio_filter = ""
+            if audio_filter:
+                args.extend(["-af", audio_filter])
+            args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-shortest"])
         args.append(output_path)
         return args
 
@@ -2213,7 +2236,17 @@ class CaptionConversationAssistant:
         return mapping.get(aspect_ratio.strip(), (1080, 1920))
 
     def _timestamp_to_seconds(self, value: str) -> float:
-        parts = value.strip().split(":")
+        normalized = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", str(value)).strip()
+        normalized = re.sub(r"\s+", "", normalized)
+        try:
+            seconds = float(normalized)
+            if seconds < 0:
+                raise RuntimeError(f"时间戳必须为正数：{value}")
+            return seconds
+        except ValueError:
+            pass
+
+        parts = normalized.split(":")
         if len(parts) == 2:
             hours = 0
             minutes, seconds = parts
@@ -2221,7 +2254,10 @@ class CaptionConversationAssistant:
             hours, minutes, seconds = parts
         else:
             raise RuntimeError(f"无法解析时间戳：{value}")
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        total_seconds = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        if total_seconds < 0:
+            raise RuntimeError(f"时间戳必须为正数：{value}")
+        return float(total_seconds)
 
     def _escape_subtitle_filter_path(self, path: str) -> str:
         return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
@@ -2898,6 +2934,34 @@ class CaptionConversationAssistant:
             action_names = [item.get("action") for item in scratchpad]
             if "read_video_edit_context" not in action_names:
                 return ReActStep("需要先读取当前导出上下文，再决定 ffmpeg 参数。", "read_video_edit_context", "")
+            last_item = scratchpad[-1] if scratchpad else {}
+            last_action = str(last_item.get("action", "")).strip()
+            last_input = str(last_item.get("action_input", "")).strip()
+            last_observation = str(last_item.get("observation", "")).strip()
+            repeated_render_failures = [
+                item
+                for item in scratchpad
+                if str(item.get("action", "")).strip() == "render_clip_segment"
+                and self._observation_has_failure(str(item.get("observation", "")))
+            ]
+            if (
+                last_action == "render_clip_segment"
+                and self._observation_has_failure(last_observation)
+                and self._count_identical_action_attempts(scratchpad, "render_clip_segment", last_input) >= 2
+            ):
+                payload = self._parse_json_object(last_input)
+                target_segment = str(payload.get("segment_id", "")).strip() if isinstance(payload, dict) else ""
+                forced_payload = {
+                    "segment_id": target_segment,
+                    "drop_audio": True,
+                    "vf_override": "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                    "notes": "相同参数已经重复失败；强制改用兼容滤镜与静音导出，避免死循环。",
+                }
+                return ReActStep(
+                    "相同的 render_clip_segment 参数已经重复失败，必须修改 vf_override 或 drop_audio，先用最小兼容参数重试。",
+                    "render_clip_segment",
+                    json.dumps(forced_payload, ensure_ascii=False),
+                )
             next_segment = self._next_pending_segment(working_state.executable_edit)
             if next_segment is not None:
                 return ReActStep(
@@ -2911,6 +2975,13 @@ class CaptionConversationAssistant:
                     "merge_rendered_segments",
                     json.dumps({"burn_subtitles": working_state.executable_edit.burn_subtitles}, ensure_ascii=False),
                 )
+            if repeated_render_failures:
+                latest_failure = repeated_render_failures[-1]
+                return ReActStep(
+                    "render_clip_segment 已连续报错，不能再重复原参数；必须修改 vf_override、af_override 或 drop_audio 后继续渲染。",
+                    "read_video_edit_context",
+                    "",
+                )
             if working_state.edited_video.error_message or working_state.executable_edit.merge_error_message:
                 return ReActStep("上一次导出失败，需要重新读取上下文并修正参数。", "read_video_edit_context", "")
             return ReActStep("已经具备导出结果。", "finalize", "")
@@ -2922,6 +2993,16 @@ class CaptionConversationAssistant:
             if step.action not in {"render_clip_segment", "merge_rendered_segments"}:
                 return False
             normalized_input = step.action_input.strip()
+            matched_items = [
+                item
+                for item in scratchpad
+                if item.get("action") == step.action
+                and str(item.get("action_input", "")).strip() == normalized_input
+            ]
+            if not matched_items:
+                return False
+            if any(self._observation_has_failure(str(item.get("observation", ""))) for item in matched_items):
+                return False
             return any(
                 item.get("action") == step.action
                 and str(item.get("action_input", "")).strip() == normalized_input
@@ -2929,6 +3010,24 @@ class CaptionConversationAssistant:
             )
 
         return should_skip
+
+    def _observation_has_failure(self, observation: str) -> bool:
+        normalized = observation.strip().lower()
+        return any(keyword in normalized for keyword in ["错误", "失败", "error", "failed", "invalid"])
+
+    def _count_identical_action_attempts(
+        self,
+        scratchpad: List[Dict[str, str]],
+        action: str,
+        action_input: str,
+    ) -> int:
+        normalized_input = action_input.strip()
+        return sum(
+            1
+            for item in scratchpad
+            if str(item.get("action", "")).strip() == action
+            and str(item.get("action_input", "")).strip() == normalized_input
+        )
 
     def _build_completion_guard(self, turn: AgentTurn, targets: Dict[str, Any], working_state: GlobalEditingState):
         def guard(scratchpad: List[Dict[str, str]]) -> bool:
