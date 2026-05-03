@@ -14,7 +14,7 @@ from threading import Lock
 from typing import Any, AsyncIterator, Dict, List, Optional
 from uuid import uuid4
 
-from app.agent.runtime import PlanAndExecuteRuntime, ReActStep, ToolRegistry, ToolSpec
+from app.agent.runtime import LightPlanningReActRuntime, ReActStep, ToolRegistry, ToolSpec
 from app.ai.factory import AIAdapterFactory
 from app.ai.types import AICompletionRequest, AIImageInput, AIMessage
 from app.core.config import settings
@@ -133,21 +133,38 @@ PLAN_PROPOSAL_PROMPT = """任务：把用户需求映射到本系统支持的执
 - edited_video
 
 规划原则：
-1. 只选择本轮真正需要更新的执行项，避免默认把所有产物都重做。
-2. 若用户要求重新分析素材、重新理解视频、重新看关键帧，必须包含 keyframe_analysis。
-3. 若用户表达为“剪辑视频”“重剪”“重新剪一版”“做完整剪辑”“出成片方案”，默认包含 subtitle_draft、editing_plan、english_title、tags；若当前没有视频上下文，额外包含 keyframe_analysis。
+1. 你的职责主要是输出本轮目标摘要、支持范围判断、以及对非导出类基础产物的最小建议。
+2. 是否需要真正导出视频，不要在这里做强规则决定，后续由 task board 与 ReAct 自主判断。
+3. 若用户要求重新分析素材、重新理解视频、重新看关键帧，必须包含 keyframe_analysis。
 4. 若用户只改字幕文案、语气、长度、节奏、错字、语言表达，只保留 subtitle_draft。
 5. 若用户只改镜头、转场、节奏、时长、结构、开场 hook、CTA，只保留 editing_plan；若同时要求重看素材，再加入 keyframe_analysis。
 6. 若用户明确要求标题或标签，只补充对应字段，不要顺带重做其他产物。
-7. 若用户提到 ffmpeg、压制、裁剪、拼接、硬字幕、导出尺寸、码率等技术执行，优先归入 editing_plan；是否需要 keyframe_analysis 取决于是否要重新理解素材。
-8. 若用户明确要求导出视频、输出成片、渲染视频、执行剪辑、生成可下载成片，必须包含 edited_video。
-9. 如果请求不属于当前视频创意会话能力，is_supported_request=false，并在 reason 中明确说明边界。
+7. 若请求不属于当前视频创意会话能力，is_supported_request=false，并在 reason 中明确说明边界。
 
 输出要求：
 1. 只返回 JSON。
 2. summary 要简洁概括用户本轮目标。
 3. steps 要写成可执行步骤，而不是空泛描述。
 4. JSON 格式必须是 {"summary":"...","steps":["..."],"selected_ids":["editing_plan"],"is_supported_request":true,"reason":"...","requests_full_editing":false,"force_keyframe_refresh":false}
+"""
+
+DRAFT_FFMPEG_COMMAND_PROMPT = """任务：起草或修正一条可执行的 ffmpeg 导出命令。
+
+角色：
+你是资深视频后期技术导演，擅长把剪辑目标转成稳健的 ffmpeg 参数。
+
+工作原则：
+1. 必须基于当前用户要求、当前剪辑方案、字幕草稿、技能文档和已有错误信息起草命令。
+2. 不要照抄技能文档示例，必须根据本轮目标调整参数。
+3. 输入视频路径和输出路径由服务端自动注入，不要显式添加 -i，不要输出 input/output 占位符。
+4. 需要烧录字幕时才使用 {{subtitle_file}}。
+5. 若存在上一次 ffmpeg 错误，必须针对错误修正命令，而不是重复原命令。
+
+输出要求：
+1. 只输出 JSON。
+2. 格式必须是 {"command_template":"-vf ... -c:v ...","output_extension":"mp4","summary":"...","needs_subtitle_file":false}
+3. command_template 必须是可以直接拼接在 `ffmpeg -y -i <input>` 后面的参数，不要包含 `ffmpeg` 本体也不要包含输出路径。
+4. summary 用一句话概括本次导出目标。
 """
 
 
@@ -231,6 +248,24 @@ class TurnEventItem:
 
 
 @dataclass
+class TaskBoardItem:
+    id: str
+    title: str
+    status: str = "todo"
+    notes: str = ""
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
+class TurnTaskBoard:
+    summary: str = ""
+    current_focus: str = ""
+    blocked_reason: str = ""
+    tasks: List[TaskBoardItem] = field(default_factory=list)
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
 class AgentTurn:
     turn_id: str
     user_prompt: str
@@ -238,6 +273,9 @@ class AgentTurn:
     events: List[TurnEventItem] = field(default_factory=list)
     final_text: str = ""
     error_message: str = ""
+    plan_summary: str = ""
+    turn_summary: str = ""
+    task_board: TurnTaskBoard = field(default_factory=TurnTaskBoard)
     started_at: str = field(default_factory=_utcnow)
     finished_at: str = ""
 
@@ -265,6 +303,7 @@ class CaptionToolContext:
     turn: AgentTurn
     working_state: GlobalEditingState
     user_prompt: str
+    targets: Dict[str, Any]
 
 
 class CaptionAssistantTool:
@@ -300,6 +339,7 @@ class RunKeyframeVisionSubagentTool(CaptionAssistantTool):
     async def execute(self, action_input: str) -> str:
         del action_input
         return await self.context.assistant._run_keyframe_vision_subagent(
+            self.context.turn,
             self.context.session,
             self.context.working_state,
         )
@@ -333,7 +373,21 @@ class ReadSkillFfmpegUsageTool(CaptionAssistantTool):
 
     async def execute(self, action_input: str) -> str:
         del action_input
-        return await self.context.assistant._tool_read_skill_ffmpeg_usage()
+        self.context.assistant._set_task_status(
+            self.context.turn,
+            "read_ffmpeg_skill",
+            "doing",
+            notes="正在读取 ffmpeg skill。",
+        )
+        content = await self.context.assistant._tool_read_skill_ffmpeg_usage()
+        self.context.assistant._set_task_status(
+            self.context.turn,
+            "read_ffmpeg_skill",
+            "done",
+            notes="ffmpeg skill 已读取。",
+            current_focus="run_ffmpeg",
+        )
+        return content
 
 
 class ReadCurrentArtifactsTool(CaptionAssistantTool):
@@ -345,12 +399,65 @@ class ReadCurrentArtifactsTool(CaptionAssistantTool):
         return await self.context.assistant._tool_read_current_artifacts(self.context.working_state)
 
 
+class DraftFfmpegCommandTool(CaptionAssistantTool):
+    name = "draft_ffmpeg_command"
+    description = (
+        "根据用户目标、剪辑方案、字幕、ffmpeg skill 和上一次错误信息，"
+        "起草或修正一条 ffmpeg 命令参数 JSON。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_draft_ffmpeg_command(
+            self.context.turn,
+            self.context.session,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class CreateTaskBoardTool(CaptionAssistantTool):
+    name = "create_task_board"
+    description = "为当前轮次创建或刷新任务板，拆分本轮子任务并标记当前焦点。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_create_task_board(
+            self.context.turn,
+            self.context.targets,
+            action_input,
+        )
+
+
+class ReadTaskBoardTool(CaptionAssistantTool):
+    name = "read_task_board"
+    description = "读取当前轮次任务板，查看任务状态、阻塞原因和当前焦点。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_task_board(self.context.turn)
+
+
+class UpdateTaskStatusTool(CaptionAssistantTool):
+    name = "update_task_status"
+    description = (
+        "更新当前轮次任务状态。"
+        "建议传入 JSON：{\"task_id\":\"run_ffmpeg\",\"status\":\"done\",\"notes\":\"...\",\"current_focus\":\"verify_export\",\"blocked_reason\":\"\"}。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_update_task_status(
+            self.context.turn,
+            action_input,
+        )
+
+
 class WriteSubtitlesTool(CaptionAssistantTool):
     name = "write_subtitles"
     description = "生成或更新字幕草稿。"
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_subtitles(
+            self.context.turn,
             self.context.session,
             self.context.working_state,
             self.context.user_prompt,
@@ -364,6 +471,7 @@ class WriteEditPlanTool(CaptionAssistantTool):
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_edit_plan(
+            self.context.turn,
             self.context.session,
             self.context.working_state,
             self.context.user_prompt,
@@ -377,6 +485,7 @@ class WriteTitleTool(CaptionAssistantTool):
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_title(
+            self.context.turn,
             self.context.session,
             self.context.working_state,
             self.context.user_prompt,
@@ -390,6 +499,7 @@ class WriteTagsTool(CaptionAssistantTool):
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_tags(
+            self.context.turn,
             self.context.session,
             self.context.working_state,
             self.context.user_prompt,
@@ -401,8 +511,10 @@ class RunBashFfmpegTool(CaptionAssistantTool):
     name = "run_bash_ffmpeg"
     description = (
         "执行单条 ffmpeg bash 命令并导出视频。"
-        "必须先读取 ffmpeg skill，再传入单条 ffmpeg 命令模板。"
+        "应优先先读取 ffmpeg skill，再通过 draft_ffmpeg_command 生成或修正命令。"
         "输入视频路径与输出文件路径由服务端自动注入；若要烧录字幕，使用 {{subtitle_file}}。"
+        "若本次 action_input 为空，将默认执行当前 task board 中最近一次 draft_ffmpeg_command 生成的命令。"
+        "推荐传入 JSON：{\"command_template\":\"-vf ... -c:v ...\",\"output_extension\":\"mp4\",\"summary\":\"...\",\"needs_subtitle_file\":true}。"
         "如果参数不合法或执行失败，工具会返回错误观察结果，代理必须根据错误信息修正后重试。"
     )
 
@@ -563,6 +675,7 @@ class CaptionConversationAssistant:
 
                 plan_payload = await self._build_plan_proposal(session, working_state, user_prompt)
                 if not plan_payload.get("is_supported_request", True):
+                    turn.plan_summary = self._build_turn_plan_summary(plan_payload)
                     await self._commit_completed_turn(
                         session=session,
                         turn=turn,
@@ -575,6 +688,9 @@ class CaptionConversationAssistant:
                     plan_payload.get("selected_ids") or [],
                     plan_payload,
                 )
+                turn.plan_summary = self._build_turn_plan_summary(plan_payload)
+                turn.task_board = self._create_turn_task_board(plan_payload, targets, user_prompt=user_prompt)
+                targets = self._merge_targets_with_task_board(targets, turn.task_board)
                 self._mark_selected_items_in_progress(working_state, targets)
                 scratchpad = await self._execute_targets(
                     session=session,
@@ -582,7 +698,7 @@ class CaptionConversationAssistant:
                     working_state=working_state,
                     user_prompt=user_prompt,
                     targets=targets,
-                    execution_plan=list(plan_payload.get("steps") or []),
+                    task_brief=self._build_runtime_task_brief(plan_payload, targets),
                 )
                 await self._finalize_turn(
                     session=session,
@@ -603,7 +719,7 @@ class CaptionConversationAssistant:
         working_state: GlobalEditingState,
         user_prompt: str,
         targets: Dict[str, Any],
-        execution_plan: List[str],
+        task_brief: str,
     ) -> List[Dict[str, str]]:
         if not any(
             [
@@ -617,8 +733,8 @@ class CaptionConversationAssistant:
         ):
             return []
 
-        registry = self._build_tool_registry(session, turn, working_state, user_prompt)
-        runtime = PlanAndExecuteRuntime(
+        registry = self._build_tool_registry(session, turn, working_state, user_prompt, targets)
+        runtime = LightPlanningReActRuntime(
             adapter=self._adapter_factory.get_text_adapter(),
             model=settings.deepseek_chat_model,
             tool_registry=registry,
@@ -627,10 +743,10 @@ class CaptionConversationAssistant:
         )
         result = await runtime.run(
             user_prompt=user_prompt,
-            execution_plan=execution_plan,
+            task_brief=task_brief,
             context_prompt=self._build_runtime_context_prompt(session, working_state, targets),
-            completion_guard=self._build_completion_guard(targets, working_state),
-            fallback_step=self._build_fallback_step(targets),
+            completion_guard=self._build_completion_guard(turn, targets, working_state),
+            fallback_step=self._build_fallback_step(turn, targets),
             should_skip_step=self._build_step_skipper(),
             progress=self._noop_progress,
             trace=lambda thought, _action, observation: self._append_turn_thought(
@@ -657,28 +773,48 @@ class CaptionConversationAssistant:
                 session, working_state, "补全初始字幕草稿。"
             )
             self._complete_workflow_artifact(working_state, "subtitle_draft", "字幕草稿已更新。")
+            self._set_task_status(turn, "subtitle_draft", "done", notes="字幕草稿已通过兜底流程补全。")
         if targets["update_editing_plan"] and not working_state.editing_plan:
             working_state.editing_plan = await self._generate_editing_plan(
                 session, working_state, "补全初始剪辑方案。"
             )
             self._complete_workflow_artifact(working_state, "editing_plan", "剪辑执行方案已更新。")
+            self._set_task_status(turn, "editing_plan", "done", notes="剪辑方案已通过兜底流程补全。")
         if targets["update_title"] and not working_state.english_title:
             working_state.english_title = await self._generate_english_title(
                 session, working_state, "补全英文标题。"
             )
             self._complete_workflow_artifact(working_state, "english_title", "英文标题已更新。")
+            self._set_task_status(turn, "english_title", "done", notes="英文标题已通过兜底流程补全。")
         if targets["update_tags"] and not working_state.tags:
             working_state.tags = await self._generate_tags(
                 session, working_state, "补全标签。"
             )
             self._complete_workflow_artifact(working_state, "tags", "标签已更新。")
-        if targets["update_edited_video"] and not working_state.edited_video.download_url:
-            await self._tool_run_bash_ffmpeg(
-                session,
-                turn,
+            self._set_task_status(turn, "tags", "done", notes="标签已通过兜底流程补全。")
+        if (
+            targets["update_edited_video"]
+            and not working_state.edited_video.download_url
+            and not working_state.edited_video.error_message
+        ):
+            working_state.edited_video.error_message = (
+                "本轮未生成有效的 ffmpeg 导出命令，因此尚未生成可下载成片。"
+            )
+            self._update_workflow_artifact(
                 working_state,
-                user_prompt,
-                user_prompt,
+                "edited_video",
+                status="error",
+                detail=working_state.edited_video.error_message,
+                requested=True,
+                needs_refresh=False,
+            )
+            self._set_task_status(
+                turn,
+                "run_ffmpeg",
+                "blocked",
+                notes=working_state.edited_video.error_message,
+                current_focus="run_ffmpeg",
+                blocked_reason=working_state.edited_video.error_message,
             )
 
         final_text = (
@@ -710,6 +846,7 @@ class CaptionConversationAssistant:
     ) -> None:
         working_state.updated_at = _utcnow()
         turn.final_text = final_text
+        turn.turn_summary = self._build_turn_summary(turn, working_state)
         turn.status = "completed"
         turn.finished_at = _utcnow()
         turn.events.append(TurnEventItem(type="final_text", content=final_text))
@@ -726,6 +863,7 @@ class CaptionConversationAssistant:
         turn = self._get_turn(session, turn_id)
         turn.status = "error"
         turn.error_message = str(exc)
+        turn.turn_summary = self._build_error_turn_summary(turn, str(exc))
         turn.finished_at = _utcnow()
         session.status = "error"
         session.error_message = str(exc)
@@ -781,6 +919,7 @@ class CaptionConversationAssistant:
         turn: AgentTurn,
         working_state: GlobalEditingState,
         user_prompt: str,
+        targets: Dict[str, Any],
     ) -> ToolRegistry:
         registry = ToolRegistry()
         context = CaptionToolContext(
@@ -789,6 +928,7 @@ class CaptionConversationAssistant:
             turn=turn,
             working_state=working_state,
             user_prompt=user_prompt,
+            targets=targets,
         )
         for tool in [
             RunKeyframeVisionSubagentTool(context),
@@ -796,6 +936,10 @@ class CaptionConversationAssistant:
             ReadManualTool(context),
             ReadSkillFfmpegUsageTool(context),
             ReadCurrentArtifactsTool(context),
+            DraftFfmpegCommandTool(context),
+            CreateTaskBoardTool(context),
+            ReadTaskBoardTool(context),
+            UpdateTaskStatusTool(context),
             WriteSubtitlesTool(context),
             WriteEditPlanTool(context),
             WriteTitleTool(context),
@@ -807,20 +951,24 @@ class CaptionConversationAssistant:
 
     async def _run_keyframe_vision_subagent(
         self,
+        turn: AgentTurn,
         session: CaptionSession,
         working_state: GlobalEditingState,
     ) -> str:
+        self._set_task_status(turn, "keyframe_analysis", "doing", notes="正在执行关键帧分析。")
         if (
             working_state.video_summary
             and working_state.frame_analyses
             and not working_state.workflow.keyframe_analysis.needs_refresh
         ):
+            self._set_task_status(turn, "keyframe_analysis", "done", notes="视频上下文已存在，跳过重复分析。")
             return "视频上下文已存在，跳过重复分析。"
 
         working_state.keyframes = []
         working_state.frame_analyses = []
         working_state.video_summary = ""
         await self._prepare_video_context(session, working_state)
+        self._set_task_status(turn, "keyframe_analysis", "done", notes="关键帧分析与视频摘要已完成。")
         return (
             "关键帧视觉分析已完成。"
             f"\n关键帧数量：{len(working_state.keyframes)}"
@@ -938,64 +1086,165 @@ class CaptionConversationAssistant:
             f"当前导出视频：\n{working_state.edited_video.download_url or '暂无'}"
         )
 
-    async def _tool_write_subtitles(
+    async def _tool_draft_ffmpeg_command(
         self,
+        turn: AgentTurn,
         session: CaptionSession,
         working_state: GlobalEditingState,
         user_prompt: str,
         action_input: str,
     ) -> str:
+        try:
+            self._set_task_status(turn, "draft_ffmpeg_command", "doing", notes="正在起草 ffmpeg 导出命令。")
+            guidance = action_input.strip() or user_prompt
+            prompt = (
+                DRAFT_FFMPEG_COMMAND_PROMPT
+                + _prompt_block("用户需求", guidance)
+                + _prompt_block("平台", session.platform)
+                + _prompt_block("输入视频路径", session.video_path)
+                + _prompt_block("输出目录", os.path.join(settings.export_dir, session.session_id))
+                + _prompt_block("说明书", session.product_manual or "无")
+                + _prompt_block("视频摘要", working_state.video_summary or "无")
+                + _prompt_block("剪辑方案", working_state.editing_plan or "无")
+                + _prompt_block("字幕草稿", working_state.subtitle_draft or "无")
+                + _prompt_block("上一次导出命令", working_state.edited_video.command or "无")
+                + _prompt_block("上一次导出错误", working_state.edited_video.error_message or "无")
+                + _prompt_block("ffmpeg 技能文档", await self._tool_read_skill_ffmpeg_usage())
+            )
+            raw = await self._text_complete(
+                prompt,
+                system_prompt=CAPTION_ASSISTANT_SYSTEM_PROMPT,
+                require_json=True,
+            )
+            payload = self._parse_ffmpeg_command_input(raw)
+            command_json = json.dumps(payload, ensure_ascii=False)
+            self._set_task_status(
+                turn,
+                "draft_ffmpeg_command",
+                "done",
+                notes=command_json,
+                current_focus="run_ffmpeg",
+            )
+            return command_json
+        except Exception as exc:
+            self._set_task_status(
+                turn,
+                "draft_ffmpeg_command",
+                "blocked",
+                notes=str(exc),
+                current_focus="draft_ffmpeg_command",
+                blocked_reason=str(exc),
+            )
+            return f"ffmpeg 命令起草失败，请基于当前上下文修正后再试：\n错误：{exc}"
+
+    async def _tool_create_task_board(
+        self,
+        turn: AgentTurn,
+        targets: Dict[str, Any],
+        action_input: str,
+    ) -> str:
+        summary = action_input.strip() or turn.plan_summary or turn.user_prompt
+        turn.task_board = self._create_turn_task_board(
+            {"summary": summary, "selected_ids": self._selected_ids_from_targets(targets)},
+            targets,
+            user_prompt=turn.user_prompt,
+        )
+        return self._serialize_task_board(turn.task_board)
+
+    async def _tool_read_task_board(self, turn: AgentTurn) -> str:
+        if not turn.task_board.tasks:
+            return "当前轮次任务板为空。请先调用 create_task_board。"
+        return self._serialize_task_board(turn.task_board)
+
+    async def _tool_update_task_status(self, turn: AgentTurn, action_input: str) -> str:
+        payload = self._parse_json_object(action_input)
+        task_id = str(payload.get("task_id", "")).strip() if isinstance(payload, dict) else ""
+        status = str(payload.get("status", "")).strip() if isinstance(payload, dict) else ""
+        notes = str(payload.get("notes", "")).strip() if isinstance(payload, dict) else ""
+        current_focus = str(payload.get("current_focus", "")).strip() if isinstance(payload, dict) else ""
+        blocked_reason = str(payload.get("blocked_reason", "")).strip() if isinstance(payload, dict) else ""
+        if not task_id or not status:
+            raise RuntimeError("update_task_status 需要传入 task_id 和 status。")
+        self._set_task_status(
+            turn,
+            task_id,
+            status,
+            notes=notes,
+            current_focus=current_focus or None,
+            blocked_reason=blocked_reason,
+        )
+        return self._serialize_task_board(turn.task_board)
+
+    async def _tool_write_subtitles(
+        self,
+        turn: AgentTurn,
+        session: CaptionSession,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+        action_input: str,
+    ) -> str:
+        self._set_task_status(turn, "subtitle_draft", "doing", notes="正在生成字幕草稿。")
         working_state.subtitle_draft = await self._generate_subtitle_draft(
             session,
             working_state,
             action_input or user_prompt,
         )
         self._complete_workflow_artifact(working_state, "subtitle_draft", "字幕草稿已更新。")
+        self._set_task_status(turn, "subtitle_draft", "done", notes="字幕草稿已更新。")
         return "字幕草稿已更新。"
 
     async def _tool_write_edit_plan(
         self,
+        turn: AgentTurn,
         session: CaptionSession,
         working_state: GlobalEditingState,
         user_prompt: str,
         action_input: str,
     ) -> str:
+        self._set_task_status(turn, "editing_plan", "doing", notes="正在生成剪辑方案。")
         working_state.editing_plan = await self._generate_editing_plan(
             session,
             working_state,
             action_input or user_prompt,
         )
         self._complete_workflow_artifact(working_state, "editing_plan", "剪辑执行方案已更新。")
+        self._set_task_status(turn, "editing_plan", "done", notes="剪辑方案已更新。")
         return "剪辑执行方案已更新。"
 
     async def _tool_write_title(
         self,
+        turn: AgentTurn,
         session: CaptionSession,
         working_state: GlobalEditingState,
         user_prompt: str,
         action_input: str,
     ) -> str:
+        self._set_task_status(turn, "english_title", "doing", notes="正在生成英文标题。")
         working_state.english_title = await self._generate_english_title(
             session,
             working_state,
             action_input or user_prompt,
         )
         self._complete_workflow_artifact(working_state, "english_title", "英文标题已更新。")
+        self._set_task_status(turn, "english_title", "done", notes="英文标题已更新。")
         return "英文标题已更新。"
 
     async def _tool_write_tags(
         self,
+        turn: AgentTurn,
         session: CaptionSession,
         working_state: GlobalEditingState,
         user_prompt: str,
         action_input: str,
     ) -> str:
+        self._set_task_status(turn, "tags", "doing", notes="正在生成标签。")
         working_state.tags = await self._generate_tags(
             session,
             working_state,
             action_input or user_prompt,
         )
         self._complete_workflow_artifact(working_state, "tags", "标签已更新。")
+        self._set_task_status(turn, "tags", "done", notes="标签已更新。")
         return "标签已更新。"
 
     async def _tool_run_bash_ffmpeg(
@@ -1008,9 +1257,13 @@ class CaptionConversationAssistant:
     ) -> str:
         attempted_command = ""
         try:
+            self._set_task_status(turn, "run_ffmpeg", "doing", notes="正在执行 ffmpeg 导出。")
             if shutil.which("ffmpeg") is None:
                 raise RuntimeError("当前运行环境未安装 ffmpeg，无法执行视频导出。")
 
+            if not action_input.strip():
+                drafted = self._find_task_item(turn, "draft_ffmpeg_command")
+                action_input = drafted.notes if drafted and drafted.notes else action_input
             payload = self._parse_ffmpeg_command_input(action_input)
             command_template = payload["command_template"]
             needs_subtitle_file = payload["needs_subtitle_file"]
@@ -1048,6 +1301,8 @@ class CaptionConversationAssistant:
                 size_bytes=os.path.getsize(output_path),
             )
             self._complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
+            self._set_task_status(turn, "run_ffmpeg", "done", notes="ffmpeg 导出已完成。", current_focus="verify_export")
+            self._set_task_status(turn, "verify_export", "done", notes="已生成可下载成片。")
             return (
                 "剪辑视频导出完成。"
                 f"\n文件名：{output_name}"
@@ -1073,6 +1328,20 @@ class CaptionConversationAssistant:
                 requested=True,
                 needs_refresh=False,
             )
+            self._set_task_status(
+                turn,
+                "run_ffmpeg",
+                "blocked",
+                notes=str(exc),
+                current_focus="run_ffmpeg",
+                blocked_reason=str(exc),
+            )
+            self._set_task_status(
+                turn,
+                "verify_export",
+                "todo",
+                notes="等待修正 ffmpeg 命令并重新导出。",
+            )
             return (
                 "ffmpeg 导出失败，请根据以下信息修正参数后重试："
                 f"\n错误：{exc}"
@@ -1080,6 +1349,8 @@ class CaptionConversationAssistant:
                 f"\n当前输出目录：{session_export_dir}"
                 f"\n当前字幕文件占位符：{{{{subtitle_file}}}}"
                 "\n注意：不要显式传入 -i 输入路径，不要传 input/output 占位符，服务端会自动注入。"
+                "\n不要向用户确认视频路径，直接基于当前路径和错误信息修正命令。"
+                '\n推荐改用 JSON 重新调用：{"command_template":"-vf ... -c:v libx264 -c:a aac","output_extension":"mp4","summary":"...","needs_subtitle_file":false}'
             )
 
     async def _generate_subtitle_draft(
@@ -1383,26 +1654,19 @@ class CaptionConversationAssistant:
 
         if any(
             keyword in normalized_prompt
-            for keyword in ["剪辑视频", "重剪", "重新剪", "完整剪辑", "剪一版", "出成片"]
+            for keyword in ["重剪", "重新剪", "完整剪辑", "出成片方案"]
         ):
             requests_full_editing = True
             selected.update({"subtitle_draft", "editing_plan", "english_title", "tags"})
             if not working_state.video_summary:
                 selected.add("keyframe_analysis")
 
-        if any(
-            keyword in normalized_prompt
-            for keyword in ["导出视频", "导出成片", "输出成片", "渲染视频", "生成成片", "执行剪辑", "烧录字幕", "压制视频"]
-        ):
-            selected.add("edited_video")
-            if not working_state.editing_plan:
-                selected.add("editing_plan")
-            if not working_state.video_summary:
-                selected.add("keyframe_analysis")
-            if "字幕" in normalized_prompt and not working_state.subtitle_draft:
-                selected.add("subtitle_draft")
+        if any(keyword in normalized_prompt for keyword in ["字幕", "口播"]) and "subtitle_draft" not in selected:
+            selected.add("subtitle_draft")
+        if any(keyword in normalized_prompt for keyword in ["镜头", "转场", "节奏", "结构", "hook", "cta", "剪辑"]) and "editing_plan" not in selected:
+            selected.add("editing_plan")
 
-        if not selected and is_supported_request:
+        if not selected and is_supported_request and not self._should_export_from_prompt(user_prompt):
             selected.update({"subtitle_draft", "editing_plan"})
 
         if force_keyframe_refresh:
@@ -1461,6 +1725,187 @@ class CaptionConversationAssistant:
             "force_keyframe_refresh": bool((inferred_targets or {}).get("force_keyframe_refresh")),
         }
 
+    def _build_turn_plan_summary(self, plan_payload: Dict[str, Any]) -> str:
+        selected = ", ".join(plan_payload.get("selected_ids") or []) or "无"
+        steps = plan_payload.get("steps") or []
+        steps_text = " | ".join(str(step).strip() for step in steps if str(step).strip()) or "无"
+        return (
+            f"本轮目标：{plan_payload.get('summary') or '未提供'}"
+            f"\n更新项：{selected}"
+            f"\n执行步骤：{steps_text}"
+        )
+
+    def _selected_ids_from_targets(self, targets: Dict[str, Any]) -> List[str]:
+        mapping = [
+            ("keyframe_analysis", targets.get("run_keyframe_analysis")),
+            ("subtitle_draft", targets.get("update_subtitles")),
+            ("editing_plan", targets.get("update_editing_plan")),
+            ("english_title", targets.get("update_title")),
+            ("tags", targets.get("update_tags")),
+            ("edited_video", targets.get("update_edited_video")),
+        ]
+        return [task_id for task_id, enabled in mapping if enabled]
+
+    def _should_export_from_prompt(self, user_prompt: str) -> bool:
+        normalized = user_prompt.lower()
+        export_keywords = [
+            "导出视频",
+            "导出成片",
+            "输出成片",
+            "渲染视频",
+            "生成成片",
+            "执行剪辑",
+            "剪辑视频",
+            "剪辑并导出",
+            "做成片",
+            "出一版",
+            "短视频",
+            "20s",
+            "20秒",
+            "ffmpeg",
+            "压制视频",
+            "烧录字幕",
+        ]
+        return any(keyword in normalized for keyword in export_keywords)
+
+    def _create_turn_task_board(
+        self,
+        plan_payload: Dict[str, Any],
+        targets: Dict[str, Any],
+        *,
+        user_prompt: str = "",
+    ) -> TurnTaskBoard:
+        tasks: List[TaskBoardItem] = []
+        selected_ids = set(self._selected_ids_from_targets(targets))
+        export_intent = targets.get("update_edited_video") or self._should_export_from_prompt(user_prompt)
+        for task_id, title in [
+            ("keyframe_analysis", "分析关键帧并建立视频上下文"),
+            ("subtitle_draft", "生成或更新字幕草稿"),
+            ("editing_plan", "生成或更新剪辑方案"),
+            ("english_title", "生成英文标题"),
+            ("tags", "生成标签"),
+        ]:
+            if task_id in selected_ids:
+                tasks.append(TaskBoardItem(id=task_id, title=title))
+        if export_intent:
+            tasks.extend(
+                [
+                    TaskBoardItem(id="read_ffmpeg_skill", title="读取 ffmpeg skill"),
+                    TaskBoardItem(id="draft_ffmpeg_command", title="起草或修正 ffmpeg 命令"),
+                    TaskBoardItem(id="run_ffmpeg", title="执行 ffmpeg 导出"),
+                    TaskBoardItem(id="verify_export", title="确认成片可下载"),
+                ]
+            )
+        current_focus = tasks[0].id if tasks else ""
+        return TurnTaskBoard(
+            summary=str(plan_payload.get("summary") or "").strip() or "执行本轮视频创作任务",
+            current_focus=current_focus,
+            blocked_reason="",
+            tasks=tasks,
+            updated_at=_utcnow(),
+        )
+
+    def _merge_targets_with_task_board(
+        self,
+        targets: Dict[str, Any],
+        task_board: TurnTaskBoard,
+    ) -> Dict[str, Any]:
+        merged = dict(targets)
+        task_ids = {task.id for task in task_board.tasks}
+        merged["run_keyframe_analysis"] = merged.get("run_keyframe_analysis") or ("keyframe_analysis" in task_ids)
+        merged["update_subtitles"] = merged.get("update_subtitles") or ("subtitle_draft" in task_ids)
+        merged["update_editing_plan"] = merged.get("update_editing_plan") or ("editing_plan" in task_ids)
+        merged["update_title"] = merged.get("update_title") or ("english_title" in task_ids)
+        merged["update_tags"] = merged.get("update_tags") or ("tags" in task_ids)
+        merged["update_edited_video"] = merged.get("update_edited_video") or any(
+            task_id in task_ids for task_id in {"read_ffmpeg_skill", "draft_ffmpeg_command", "run_ffmpeg", "verify_export"}
+        )
+        return merged
+
+    def _serialize_task_board(self, task_board: TurnTaskBoard) -> str:
+        return json.dumps(asdict(task_board), ensure_ascii=False)
+
+    def _find_task_item(self, turn: AgentTurn, task_id: str) -> TaskBoardItem | None:
+        for item in turn.task_board.tasks:
+            if item.id == task_id:
+                return item
+        return None
+
+    def _set_task_status(
+        self,
+        turn: AgentTurn,
+        task_id: str,
+        status: str,
+        *,
+        notes: str = "",
+        current_focus: str | None = None,
+        blocked_reason: str = "",
+    ) -> None:
+        item = self._find_task_item(turn, task_id)
+        if item is None:
+            return
+        item.status = status
+        if notes:
+            item.notes = notes
+        item.updated_at = _utcnow()
+        if current_focus is not None:
+            turn.task_board.current_focus = current_focus
+        elif status == "done":
+            for candidate in turn.task_board.tasks:
+                if candidate.status in {"todo", "doing", "blocked"}:
+                    turn.task_board.current_focus = candidate.id
+                    break
+            else:
+                turn.task_board.current_focus = ""
+        else:
+            turn.task_board.current_focus = task_id
+        turn.task_board.blocked_reason = blocked_reason
+        turn.task_board.updated_at = _utcnow()
+
+    def _build_runtime_task_brief(
+        self,
+        plan_payload: Dict[str, Any],
+        targets: Dict[str, Any],
+    ) -> str:
+        selected_ids = plan_payload.get("selected_ids") or self._selected_ids_from_targets(targets)
+        selected = ", ".join(selected_ids) or "无"
+        return (
+            f"目标概述：{plan_payload.get('summary') or '未提供'}"
+            f"\n本轮只处理这些更新项：{selected}"
+            f"\n执行提示：{' | '.join(plan_payload.get('steps') or []) or '按需选择必要工具推进'}"
+            f"\n关键约束：只更新本轮请求涉及的产物；不要为了凑完整而重做无关内容。"
+            f"\n任务约束：优先创建并读取 task board，后续每一步都以 task board 的未完成任务为准。"
+            f"\n导出要求：{self._describe_export_requirement(targets)}"
+        )
+
+    def _describe_export_requirement(self, targets: Dict[str, Any]) -> str:
+        if targets.get("update_edited_video"):
+            return "若要导出视频，必须先形成明确方案，再读取 ffmpeg skill，并生成可执行命令后导出。"
+        return "本轮不要求导出视频。"
+
+    def _build_recent_turn_memory(
+        self,
+        session: CaptionSession,
+        current_turn_id: str,
+        *,
+        limit: int = 4,
+    ) -> str:
+        memories: List[str] = []
+        for turn in reversed(session.turns):
+            if turn.turn_id == current_turn_id:
+                continue
+            summary = turn.turn_summary.strip() or turn.final_text.strip()[:500]
+            if not summary:
+                continue
+            memories.append(
+                f"- 用户需求：{turn.user_prompt.strip()[:120]}\n  状态：{turn.status}\n  摘要：{summary[:400]}"
+            )
+            if len(memories) >= limit:
+                break
+        if not memories:
+            return "无历史轮次摘要。"
+        return "\n".join(reversed(memories))
+
     def _build_runtime_context_prompt(
         self,
         session: CaptionSession,
@@ -1477,10 +1922,15 @@ class CaptionConversationAssistant:
             f"\n是否导出视频：{targets['update_edited_video']}"
             "\n可用技能文档：skills/ffmpeg-usage/SKILL.md，可通过 read_skill_ffmpeg_usage 读取。"
             "\n当用户需求涉及 ffmpeg 命令、裁剪、拼接、压缩、比例调整、字幕烧录、导出规范时，应优先读取该技能。"
-            "\n服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径。"
+            "\n服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径，这两个路径是当前轮次的权威事实，不允许向用户再次索要。"
             f"\n当前输入视频路径：{session.video_path}"
             f"\n当前输出目录：{os.path.join(settings.export_dir, session.session_id)}"
-            "\n如果 run_bash_ffmpeg 返回错误观察结果，必须根据错误内容修正参数后再次调用该工具。"
+            "\n导出视频时，推荐先调用 draft_ffmpeg_command 生成或修正参数，再调用 run_bash_ffmpeg 执行。"
+            "\nrun_bash_ffmpeg 推荐输入 JSON："
+            '\n{"command_template":"-vf ... -c:v libx264 -c:a aac","output_extension":"mp4","summary":"导出 9:16 成片","needs_subtitle_file":false}'
+            "\n如果 run_bash_ffmpeg 返回错误观察结果，必须先调用 draft_ffmpeg_command 基于错误修正参数，再继续执行。"
+            f"\n当前任务板：{self._serialize_task_board(self._get_turn(session, session.active_turn_id).task_board)}"
+            f"\n最近轮次摘要：\n{self._build_recent_turn_memory(session, session.active_turn_id)}"
             f"\n视频摘要：{working_state.video_summary or '无'}"
             f"\n关键帧分析条数：{len(working_state.frame_analyses)}"
             f"\n当前字幕草稿：{working_state.subtitle_draft[:1200] if working_state.subtitle_draft else '无'}"
@@ -1490,22 +1940,24 @@ class CaptionConversationAssistant:
             f"\n当前导出视频：{working_state.edited_video.download_url or '无'}"
         )
 
-    def _build_completion_guard(self, targets: Dict[str, Any], working_state: GlobalEditingState):
+    def _build_completion_guard(self, turn: AgentTurn, targets: Dict[str, Any], working_state: GlobalEditingState):
         def guard(scratchpad: List[Dict[str, str]]) -> bool:
-            action_names = {item.get("action") for item in scratchpad}
-            keyframe_ready = (not targets["run_keyframe_analysis"]) or ("run_keyframe_vision_subagent" in action_names)
-            subtitles_ready = (not targets["update_subtitles"]) or ("write_subtitles" in action_names)
-            editing_ready = (not targets["update_editing_plan"]) or ("write_edit_plan" in action_names)
-            title_ready = (not targets["update_title"]) or ("write_title" in action_names)
-            tags_ready = (not targets["update_tags"]) or ("write_tags" in action_names)
+            if turn.task_board.tasks:
+                required_done = all(task.status == "done" for task in turn.task_board.tasks)
+                if not required_done:
+                    return False
             video_ready = (not targets["update_edited_video"]) or bool(working_state.edited_video.download_url)
-            return keyframe_ready and subtitles_ready and editing_ready and title_ready and tags_ready and video_ready
+            return video_ready
 
         return guard
 
-    def _build_fallback_step(self, targets: Dict[str, Any]):
+    def _build_fallback_step(self, turn: AgentTurn, targets: Dict[str, Any]):
         def fallback(scratchpad: List[Dict[str, str]]) -> ReActStep:
             action_names = {item.get("action") for item in scratchpad}
+            if not turn.task_board.tasks and "create_task_board" not in action_names:
+                return ReActStep("需要先创建本轮任务板，明确子任务与当前焦点。", "create_task_board", "")
+            if turn.task_board.tasks and "read_task_board" not in action_names:
+                return ReActStep("需要先读取任务板，确认当前还有哪些任务未完成。", "read_task_board", "")
             if targets["run_keyframe_analysis"] and "run_keyframe_vision_subagent" not in action_names:
                 return ReActStep("需要先完成关键帧视觉分析，建立视频上下文。", "run_keyframe_vision_subagent", "")
             if targets["update_subtitles"] and "write_subtitles" not in action_names:
@@ -1516,15 +1968,24 @@ class CaptionConversationAssistant:
                 return ReActStep("还需要产出英文标题。", "write_title", "")
             if targets["update_tags"] and "write_tags" not in action_names:
                 return ReActStep("还需要产出标签。", "write_tags", "")
+            if targets["update_edited_video"] and "read_skill_ffmpeg_usage" not in action_names:
+                return ReActStep("导出前需要先读取 ffmpeg skill，避免生成错误命令。", "read_skill_ffmpeg_usage", "")
+            if targets["update_edited_video"] and "draft_ffmpeg_command" not in action_names:
+                return ReActStep("还需要先生成一版贴合当前目标的 ffmpeg 命令参数。", "draft_ffmpeg_command", "")
             if targets["update_edited_video"] and "run_bash_ffmpeg" not in action_names:
                 return ReActStep("还需要基于当前方案执行 ffmpeg 导出成片。", "run_bash_ffmpeg", "")
+            if turn.task_board.blocked_reason and "draft_ffmpeg_command" in action_names:
+                return ReActStep("上一次 ffmpeg 执行失败，需要根据错误修正命令后重试。", "draft_ffmpeg_command", "")
             return ReActStep("本轮结果已经齐备。", "finalize", "")
 
         return fallback
 
     def _build_step_skipper(self):
         single_run_actions = {
+            "create_task_board",
+            "read_task_board",
             "run_keyframe_vision_subagent",
+            "read_skill_ffmpeg_usage",
             "write_subtitles",
             "write_edit_plan",
             "write_title",
@@ -1713,6 +2174,43 @@ class CaptionConversationAssistant:
         if working_state.video_summary:
             return f"视频摘要：\n{working_state.video_summary.strip()}"
         return "本轮产物已生成完成。"
+
+    def _build_turn_summary(self, turn: AgentTurn, working_state: GlobalEditingState) -> str:
+        action_names = {
+            event.tool_name
+            for event in turn.events
+            if event.type == "tool_call" and event.tool_name
+        }
+        updated_items: List[str] = []
+        if "run_keyframe_vision_subagent" in action_names:
+            updated_items.append("关键帧分析")
+        if "write_subtitles" in action_names:
+            updated_items.append("字幕草稿")
+        if "write_edit_plan" in action_names:
+            updated_items.append("剪辑方案")
+        if "write_title" in action_names:
+            updated_items.append("英文标题")
+        if "write_tags" in action_names:
+            updated_items.append("标签")
+        if working_state.edited_video.download_url and "run_bash_ffmpeg" in action_names:
+            updated_items.append("导出视频")
+        elif working_state.edited_video.error_message and "run_bash_ffmpeg" in action_names:
+            updated_items.append("导出视频失败")
+
+        return (
+            f"用户需求：{turn.user_prompt.strip()[:180]}"
+            f"\n计划摘要：{turn.plan_summary.strip()[:400] or '无'}"
+            f"\n结果：{('、'.join(updated_items) if updated_items else '无显式更新')}"
+            f"\n最终状态：{turn.status}"
+        )
+
+    def _build_error_turn_summary(self, turn: AgentTurn, error_message: str) -> str:
+        return (
+            f"用户需求：{turn.user_prompt.strip()[:180]}"
+            f"\n计划摘要：{turn.plan_summary.strip()[:400] or '无'}"
+            f"\n结果：执行失败"
+            f"\n错误：{error_message[:500]}"
+        )
 
     def _get_turn(self, session: CaptionSession, turn_id: str) -> AgentTurn:
         for turn in session.turns:

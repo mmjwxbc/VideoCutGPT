@@ -7,15 +7,17 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from app.ai.base import AIAdapter
 from app.ai.types import AICompletionRequest, AIMessage
 
-REACT_AGENT_PROMPT_PREFIX = """你是一个采用 ReAct 风格的短视频创作执行代理。
+REACT_AGENT_PROMPT_PREFIX = """你是一个采用轻规划 ReAct 风格的短视频创作执行代理。
 
 执行原则：
-1. 先判断当前真正缺什么信息，再选择最合适的工具推进。
-2. 不要跳步，不要重复调用无必要的工具。
-3. 当用户需求涉及 ffmpeg 命令、视频裁剪拼接、压缩导出、字幕烧录、尺寸比例调整、平台发布规格等技术执行时，应优先读取相关 skill 工具，再决定后续写作动作。
-4. 如果信息还不够，不要提前 finalize。
-5. 如果某个工具已经完成同类必要工作，避免无意义重复调用。
-6. 如果工具观察结果明确提示参数错误、命令错误或执行失败，必须根据错误内容修正后再次调用合适工具，不能直接 finalize。
+1. 先阅读本轮任务简报，只围绕本轮目标推进，不要被历史细节干扰。
+2. 先判断当前真正缺什么信息，再选择最合适的工具推进。
+3. 不要跳步，不要重复调用无必要的工具。
+4. 当用户需求涉及 ffmpeg 命令、视频裁剪拼接、压缩导出、字幕烧录、尺寸比例调整、平台发布规格等技术执行时，应优先读取相关 skill 工具，并优先使用 draft_ffmpeg_command 起草或修正命令，再执行 bash。
+5. 如果信息还不够，不要提前 finalize。
+6. 如果某个工具已经完成同类必要工作，避免无意义重复调用。
+7. 如果工具观察结果明确提示参数错误、命令错误或执行失败，必须根据错误内容修正后再次调用合适工具，不能直接 finalize，也不能重复原命令。
+8. 当前轮次必须以 task board 为准：先创建或读取任务板，再围绕未完成任务推进；只有任务板里的必要任务都完成后才能 finalize。
 
 输出要求：
 1. 只返回 JSON，格式为 {"thought":"...","action":"...","action_input":"..."}。
@@ -69,12 +71,12 @@ class ReActStep:
 
 
 @dataclass(slots=True)
-class PlanAndExecuteResult:
+class LightPlanningReActResult:
     scratchpad: List[Dict[str, str]]
 
 
-class PlanAndExecuteRuntime:
-    """Explicit Python implementation of a ReAct plan-and-execute loop."""
+class LightPlanningReActRuntime:
+    """Explicit Python implementation of a lightweight-planning ReAct loop."""
 
     def __init__(
         self,
@@ -95,7 +97,7 @@ class PlanAndExecuteRuntime:
         self,
         *,
         user_prompt: str,
-        execution_plan: List[str],
+        task_brief: str,
         context_prompt: str,
         completion_guard: Callable[[List[Dict[str, str]]], bool],
         fallback_step: Callable[[List[Dict[str, str]]], ReActStep],
@@ -103,13 +105,13 @@ class PlanAndExecuteRuntime:
         progress: ProgressFunc,
         trace: TraceFunc,
         planner_stream: PlannerStreamFunc | None = None,
-    ) -> PlanAndExecuteResult:
+    ) -> LightPlanningReActResult:
         scratchpad: List[Dict[str, str]] = []
         for _ in range(self._max_steps):
             await progress("Agent 正在规划下一步执行动作...")
             step = await self._next_step(
                 user_prompt=user_prompt,
-                execution_plan=execution_plan,
+                task_brief=task_brief,
                 context_prompt=context_prompt,
                 scratchpad=scratchpad,
                 planner_stream=planner_stream,
@@ -117,7 +119,11 @@ class PlanAndExecuteRuntime:
             if not step.action:
                 step = fallback_step(scratchpad)
             if step.action == "finalize":
-                break
+                if completion_guard(scratchpad):
+                    break
+                step = fallback_step(scratchpad)
+                if step.action == "finalize":
+                    break
 
             if should_skip_step and should_skip_step(step, scratchpad):
                 step = fallback_step(scratchpad)
@@ -143,13 +149,13 @@ class PlanAndExecuteRuntime:
             if completion_guard(scratchpad):
                 break
 
-        return PlanAndExecuteResult(scratchpad=scratchpad)
+        return LightPlanningReActResult(scratchpad=scratchpad)
 
     async def _next_step(
         self,
         *,
         user_prompt: str,
-        execution_plan: List[str],
+        task_brief: str,
         context_prompt: str,
         scratchpad: List[Dict[str, str]],
         planner_stream: PlannerStreamFunc | None = None,
@@ -158,7 +164,7 @@ class PlanAndExecuteRuntime:
             REACT_AGENT_PROMPT_PREFIX
             + _runtime_block("可用工具", self._tool_registry.render_prompt())
             + _runtime_block("用户需求", user_prompt)
-            + _runtime_block("执行计划", json.dumps(execution_plan, ensure_ascii=False))
+            + _runtime_block("本轮任务简报", task_brief)
             + _runtime_block("上下文", context_prompt)
             + _runtime_block("已有观察", json.dumps(scratchpad, ensure_ascii=False))
         )
@@ -210,11 +216,15 @@ class PlanAndExecuteRuntime:
 
     def _progress_text_for_action(self, action: str) -> str:
         mapping = {
+            "create_task_board": "Agent 正在创建当前轮次任务板...",
+            "read_task_board": "Agent 正在读取当前轮次任务板...",
+            "update_task_status": "Agent 正在更新当前轮次任务状态...",
             "run_keyframe_vision_subagent": "Agent 正在调用关键帧视觉子代理...",
             "read_video_context": "Agent 正在读取视频上下文...",
             "read_manual": "Agent 正在读取产品说明...",
             "read_skill_ffmpeg_usage": "Agent 正在读取 ffmpeg 技能文档...",
             "read_current_artifacts": "Agent 正在读取当前产物...",
+            "draft_ffmpeg_command": "Agent 正在起草或修正 ffmpeg 导出命令...",
             "write_subtitles": "Agent 正在生成字幕草稿...",
             "write_edit_plan": "Agent 正在生成剪辑方案...",
             "write_title": "Agent 正在生成英文标题...",
