@@ -12,28 +12,6 @@ export const captionSessionEventsUrl = (sessionId: string) =>
 export const captionSessionExportedVideoUrl = (sessionId: string) =>
   `/api/caption/assistant/session/${sessionId}/exported-video`;
 
-// 字幕生成
-export const generateCaption = async (
-  video: File,
-  platform: string,
-  productManual: string | null,
-) => {
-  const formData = new FormData();
-  formData.append('video', video);
-  formData.append('platform', platform);
-  if (productManual) {
-    formData.append('product_manual', productManual);
-  }
-
-  const response = await api.post('/caption/generate', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
-
-  return response.data;
-};
-
 export const createCaptionAssistantSession = async (
   video: File,
   platform: string,

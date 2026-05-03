@@ -13,10 +13,10 @@ REACT_AGENT_PROMPT_PREFIX = """你是一个采用轻规划 ReAct 风格的短视
 1. 先阅读本轮任务简报，只围绕本轮目标推进，不要被历史细节干扰。
 2. 先判断当前真正缺什么信息，再选择最合适的工具推进。
 3. 不要跳步，不要重复调用无必要的工具。
-4. 当用户需求涉及 ffmpeg 命令、视频裁剪拼接、压缩导出、字幕烧录、尺寸比例调整、平台发布规格等技术执行时，应优先读取相关 skill 工具，并优先使用 draft_ffmpeg_command 起草或修正命令，再执行 bash。
+4. 当用户需求涉及视频剪辑导出、片段拼接、压缩导出、字幕烧录、尺寸比例调整、平台发布规格等技术执行时，应先使用 derive_clip_segments 建立原视频片段映射，再调用 run_video_edit_subagent，把具体导出交给专门的剪辑导出子代理处理。
 5. 如果信息还不够，不要提前 finalize。
 6. 如果某个工具已经完成同类必要工作，避免无意义重复调用。
-7. 如果工具观察结果明确提示参数错误、命令错误或执行失败，必须根据错误内容修正后再次调用合适工具，不能直接 finalize，也不能重复原命令。
+7. 如果工具观察结果明确提示参数错误、命令错误或执行失败，必须根据错误内容再次调用合适工具推进，不能直接 finalize。
 8. 当前轮次必须以 task board 为准：先创建或读取任务板，再围绕未完成任务推进；只有任务板里的必要任务都完成后才能 finalize。
 
 输出要求：
@@ -142,6 +142,7 @@ class LightPlanningReActRuntime:
                 {
                     "thought": step.thought,
                     "action": step.action,
+                    "action_input": step.action_input,
                     "observation": observation,
                 }
             )
@@ -222,13 +223,15 @@ class LightPlanningReActRuntime:
             "run_keyframe_vision_subagent": "Agent 正在调用关键帧视觉子代理...",
             "read_video_context": "Agent 正在读取视频上下文...",
             "read_manual": "Agent 正在读取产品说明...",
-            "read_skill_ffmpeg_usage": "Agent 正在读取 ffmpeg 技能文档...",
             "read_current_artifacts": "Agent 正在读取当前产物...",
-            "draft_ffmpeg_command": "Agent 正在起草或修正 ffmpeg 导出命令...",
+            "derive_clip_segments": "Agent 正在建立原视频片段映射...",
+            "run_video_edit_subagent": "Agent 正在委托剪辑导出子代理执行视频导出...",
+            "read_video_edit_context": "Agent 正在读取视频导出上下文...",
+            "render_clip_segment": "Agent 正在渲染单个视频片段...",
+            "merge_rendered_segments": "Agent 正在合并已渲染片段并生成成片...",
             "write_subtitles": "Agent 正在生成字幕草稿...",
             "write_edit_plan": "Agent 正在生成剪辑方案...",
             "write_title": "Agent 正在生成英文标题...",
             "write_tags": "Agent 正在生成标签...",
-            "run_bash_ffmpeg": "Agent 正在执行 ffmpeg bash 导出视频...",
         }
         return mapping.get(action, "Agent 正在执行工具...")

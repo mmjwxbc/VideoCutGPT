@@ -33,36 +33,6 @@ async def _persist_upload(video: UploadFile) -> str:
 def _format_sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-
-@router.post("/generate")
-async def generate_caption(
-    video: Annotated[UploadFile, File(...)],
-    platform: Annotated[str, Form(...)],
-    product_manual: Annotated[str | None, Form()] = None,
-):
-    """
-    兼容旧接口，等待任务完成后返回一次性结果。
-    """
-    video_path = await _persist_upload(video)
-    result = await caption_assistant.create_session(
-        video_path=video_path,
-        platform=platform,
-        product_manual=product_manual,
-        user_prompt="请先生成字幕初稿，并给出适合投放短视频的剪辑方案。",
-    )
-    completed = await caption_assistant.wait_for_completion(result["session_id"])
-    editing_state = completed["global_editing_state"]
-    latest_turn = completed["turns"][-1] if completed["turns"] else {}
-    return {
-        "caption": editing_state["subtitle_draft"],
-        "editing_plan": editing_state["editing_plan"],
-        "keyframes": editing_state["keyframes"],
-        "session_id": completed["session_id"],
-        "response": latest_turn.get("final_text", ""),
-        "exported_video": editing_state.get("edited_video"),
-    }
-
-
 @router.post("/assistant/session")
 async def create_caption_session(
     video: Annotated[UploadFile, File(...)],

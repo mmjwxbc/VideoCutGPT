@@ -11,7 +11,6 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
 from threading import Lock
 from typing import Any, AsyncIterator, Dict, List, Optional
 from uuid import uuid4
@@ -152,23 +151,27 @@ PLAN_PROPOSAL_PROMPT = """任务：把用户需求映射到本系统支持的执
 4. JSON 格式必须是 {"summary":"...","steps":["..."],"selected_ids":["editing_plan"],"is_supported_request":true,"reason":"...","requests_full_editing":false,"force_keyframe_refresh":false}
 """
 
-DRAFT_FFMPEG_COMMAND_PROMPT = """任务：起草或修正一条可执行的 ffmpeg 导出命令。
+DERIVE_CLIP_SEGMENTS_PROMPT = """任务：把创意剪辑方案翻译成可执行的原视频取材片段。
 
 角色：
-你是资深视频后期技术导演，擅长把剪辑目标转成稳健的 ffmpeg 参数。
+你是资深视频后期导演，擅长把成片时间线映射为原素材取材时间线。
 
 工作原则：
-1. 必须基于当前用户要求、当前剪辑方案、字幕草稿、技能文档和已有错误信息起草命令。
-2. 不要照抄技能文档示例，必须根据本轮目标调整参数。
-3. 输入视频路径和输出路径由服务端自动注入，不要显式添加 -i，不要输出 input/output 占位符。
-4. 需要烧录字幕时才使用 {{subtitle_file}}。
-5. 若存在上一次 ffmpeg 错误，必须针对错误修正命令，而不是重复原命令。
+1. editing_plan 里的时间是成片时间线，不是原视频时间线。
+2. 你必须输出原视频中的 source_start/source_end，并说明它们在成片中的 timeline_start/timeline_end。
+3. 每个 segment 都要能落到原视频相对时间上，不能只重复成片时间。
+4. 若需要重复利用某个原视频片段，可以多次引用不同 source_start/source_end。
+5. 每个 segment 内部只能围绕一个主题或一个连续动作，不要把多个不连续语义硬塞进一个 segment。
+6. 如果片段数量偏多、总时长可能超目标时长，优先通过减少冗余片段、提升片段 speed 来收敛，而不是无脑堆 segment。
+7. 如果片段数量明显不足以支撑目标时长，应优先复用语义相邻的素材区间，必要时放慢关键动作；只有在确实没有足够信息时，才提示需要更密的关键帧分析。
+8. 如果信息不足，优先结合关键帧时间戳、视频摘要、字幕节奏做最合理映射，不要返回空结构。
 
 输出要求：
 1. 只输出 JSON。
-2. 格式必须是 {"command_template":"-vf ... -c:v ...","output_extension":"mp4","summary":"...","needs_subtitle_file":false}
-3. command_template 必须是可以直接拼接在 `ffmpeg -y -i <input>` 后面的参数，不要包含 `ffmpeg` 本体也不要包含输出路径。
-4. summary 用一句话概括本次导出目标。
+2. 格式必须是：
+{"summary":"...","total_duration_seconds":30,"aspect_ratio":"9:16","burn_subtitles":true,"segments":[{"id":"seg_1","source_start":"00:00:12","source_end":"00:00:18","timeline_start":"00:00:00","timeline_end":"00:00:04","output_duration_seconds":4,"purpose":"开场 hook","visual_instruction":"特写污渍区域","speed":1.0,"transition_to_next":"hard_cut","subtitle_text":"..."}]}
+3. source_start/source_end 必须是原视频相对时间。
+4. speed 默认 1.0；若需要加速减速，可在 0.5 到 2.0 之间调整。
 """
 
 
@@ -204,6 +207,9 @@ class EditingWorkflowState:
     editing_plan: WorkflowArtifactState = field(
         default_factory=lambda: WorkflowArtifactState(label="剪辑方案")
     )
+    clip_segments: WorkflowArtifactState = field(
+        default_factory=lambda: WorkflowArtifactState(label="片段映射")
+    )
     english_title: WorkflowArtifactState = field(
         default_factory=lambda: WorkflowArtifactState(label="英文标题")
     )
@@ -228,6 +234,49 @@ class EditedVideoArtifact:
 
 
 @dataclass
+class ClipSegment:
+    id: str
+    source_start: str
+    source_end: str
+    timeline_start: str
+    timeline_end: str
+    output_duration_seconds: float
+    purpose: str = ""
+    visual_instruction: str = ""
+    speed: float = 1.0
+    transition_to_next: str = "hard_cut"
+    subtitle_text: str = ""
+
+
+@dataclass
+class RenderedClipSegment:
+    segment_id: str
+    status: str = "todo"
+    file_name: str = ""
+    storage_path: str = ""
+    command: str = ""
+    error_message: str = ""
+    summary: str = ""
+    size_bytes: int = 0
+    created_at: str = field(default_factory=_utcnow)
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
+class ExecutableEditDecision:
+    summary: str = ""
+    total_duration_seconds: float = 0.0
+    aspect_ratio: str = "9:16"
+    burn_subtitles: bool = True
+    segments: List[ClipSegment] = field(default_factory=list)
+    rendered_segments: List[RenderedClipSegment] = field(default_factory=list)
+    merged_segments_path: str = ""
+    merge_command: str = ""
+    merge_error_message: str = ""
+    updated_at: str = field(default_factory=_utcnow)
+
+
+@dataclass
 class GlobalEditingState:
     request_summary: str = ""
     keyframes: List[Dict[str, Any]] = field(default_factory=list)
@@ -235,6 +284,7 @@ class GlobalEditingState:
     video_summary: str = ""
     subtitle_draft: str = ""
     editing_plan: str = ""
+    executable_edit: ExecutableEditDecision = field(default_factory=ExecutableEditDecision)
     english_title: str = ""
     tags: List[str] = field(default_factory=list)
     edited_video: EditedVideoArtifact = field(default_factory=EditedVideoArtifact)
@@ -308,6 +358,93 @@ class CaptionToolContext:
     working_state: GlobalEditingState
     user_prompt: str
     targets: Dict[str, Any]
+
+
+@dataclass
+class VideoEditSubAgentContext:
+    assistant: "CaptionConversationAssistant"
+    session: CaptionSession
+    turn: AgentTurn
+    working_state: GlobalEditingState
+    user_prompt: str
+
+
+class VideoEditExportSubAgent:
+    def __init__(self, context: VideoEditSubAgentContext) -> None:
+        self.context = context
+
+    async def run(self, instruction: str) -> str:
+        assistant = self.context.assistant
+        turn = self.context.turn
+        session = self.context.session
+        working_state = self.context.working_state
+        user_prompt = instruction.strip() or self.context.user_prompt
+
+        assistant._set_task_status(
+            turn,
+            "run_video_edit_subagent",
+            "doing",
+            notes="导出子代理正在读取上下文并尝试执行 ffmpeg。",
+            current_focus="run_video_edit_subagent",
+        )
+
+        if not working_state.executable_edit.segments:
+            await assistant._tool_derive_clip_segments(
+                turn,
+                session,
+                working_state,
+                user_prompt,
+                user_prompt,
+            )
+
+        registry = assistant._build_video_edit_tool_registry(
+            session=session,
+            turn=turn,
+            working_state=working_state,
+            user_prompt=user_prompt,
+        )
+        runtime = LightPlanningReActRuntime(
+            adapter=assistant._adapter_factory.get_text_adapter(),
+            model=settings.deepseek_chat_model,
+            tool_registry=registry,
+            max_steps=min(settings.agent_max_steps, 8),
+            timeout_seconds=settings.glm_request_timeout_seconds,
+        )
+        result = await runtime.run(
+            user_prompt=user_prompt,
+            task_brief=assistant._build_video_edit_task_brief(session, turn, working_state, user_prompt),
+            context_prompt=assistant._build_video_edit_context_prompt(session, turn, working_state),
+            completion_guard=assistant._build_video_edit_completion_guard(working_state),
+            fallback_step=assistant._build_video_edit_fallback_step(session, turn, working_state),
+            should_skip_step=assistant._build_video_edit_step_skipper(),
+            progress=assistant._noop_progress,
+            trace=lambda thought, _action, observation: assistant._append_turn_thought(
+                session,
+                turn,
+                thought,
+                observation,
+            ),
+        )
+        if working_state.edited_video.download_url:
+            assistant._set_task_status(
+                turn,
+                "run_video_edit_subagent",
+                "done",
+                notes="导出子代理已完成视频拼接与导出。",
+                current_focus="verify_export",
+            )
+            return result.scratchpad[-1]["observation"] if result.scratchpad else "导出子代理已完成视频导出。"
+
+        last_error = working_state.edited_video.error_message or turn.task_board.blocked_reason or "导出子代理执行失败。"
+        assistant._set_task_status(
+            turn,
+            "run_video_edit_subagent",
+            "blocked",
+            notes=last_error,
+            current_focus="run_video_edit_subagent",
+            blocked_reason=last_error,
+        )
+        return last_error
 
 
 class CaptionAssistantTool(ABC):
@@ -385,33 +522,6 @@ class ReadManualTool(CaptionAssistantTool):
         return await self.context.assistant._tool_read_manual(self.context.session)
 
 
-class ReadSkillFfmpegUsageTool(CaptionAssistantTool):
-    name = "read_skill_ffmpeg_usage"
-    description = (
-        "读取 skills/ffmpeg-usage/SKILL.md。"
-        "当用户要求输出 ffmpeg 命令、字幕烧录、裁剪拼接、比例调整、平台导出规范、"
-        "压缩优化或任何可执行音视频处理步骤时，应优先调用此工具。"
-    )
-
-    async def execute(self, action_input: str) -> str:
-        del action_input
-        self.context.assistant._set_task_status(
-            self.context.turn,
-            "read_ffmpeg_skill",
-            "doing",
-            notes="正在读取 ffmpeg skill。",
-        )
-        content = await self.context.assistant._tool_read_skill_ffmpeg_usage()
-        self.context.assistant._set_task_status(
-            self.context.turn,
-            "read_ffmpeg_skill",
-            "done",
-            notes="ffmpeg skill 已读取。",
-            current_focus="run_ffmpeg",
-        )
-        return content
-
-
 class ReadCurrentArtifactsTool(CaptionAssistantTool):
     name = "read_current_artifacts"
     description = "读取当前字幕、剪辑方案、标题和标签。"
@@ -421,15 +531,12 @@ class ReadCurrentArtifactsTool(CaptionAssistantTool):
         return await self.context.assistant._tool_read_current_artifacts(self.context.working_state)
 
 
-class DraftFfmpegCommandTool(CaptionAssistantTool):
-    name = "draft_ffmpeg_command"
-    description = (
-        "根据用户目标、剪辑方案、字幕、ffmpeg skill 和上一次错误信息，"
-        "起草或修正一条 ffmpeg 命令参数 JSON。"
-    )
+class DeriveClipSegmentsTool(CaptionAssistantTool):
+    name = "derive_clip_segments"
+    description = "把成片剪辑方案映射为原视频片段列表，生成可执行的 source_start/source_end 时间线。"
 
     async def execute(self, action_input: str) -> str:
-        return await self.context.assistant._tool_draft_ffmpeg_command(
+        return await self.context.assistant._tool_derive_clip_segments(
             self.context.turn,
             self.context.session,
             self.context.working_state,
@@ -463,7 +570,7 @@ class UpdateTaskStatusTool(CaptionAssistantTool):
     name = "update_task_status"
     description = (
         "更新当前轮次任务状态。"
-        "建议传入 JSON：{\"task_id\":\"run_ffmpeg\",\"status\":\"done\",\"notes\":\"...\",\"current_focus\":\"verify_export\",\"blocked_reason\":\"\"}。"
+        "建议传入 JSON：{\"task_id\":\"run_video_edit_subagent\",\"status\":\"done\",\"notes\":\"...\",\"current_focus\":\"verify_export\",\"blocked_reason\":\"\"}。"
     )
 
     async def execute(self, action_input: str) -> str:
@@ -529,19 +636,78 @@ class WriteTagsTool(CaptionAssistantTool):
         )
 
 
-class RunBashFfmpegTool(CaptionAssistantTool):
-    name = "run_bash_ffmpeg"
+class RunVideoEditSubagentTool(CaptionAssistantTool):
+    name = "run_video_edit_subagent"
+    description = "调用专门的视频剪辑导出子代理：负责片段映射、构建 ffmpeg concat 命令、执行导出并在失败时重试。"
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_run_video_edit_subagent(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class ReadVideoEditContextTool(CaptionAssistantTool):
+    name = "read_video_edit_context"
+    description = "读取当前视频导出上下文：包括输入视频路径、输出目录、片段映射、字幕状态、上一条失败命令和 stderr。"
+
+    async def execute(self, action_input: str) -> str:
+        del action_input
+        return await self.context.assistant._tool_read_video_edit_context(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+        )
+
+
+class RunFfmpegExportTool(CaptionAssistantTool):
+    name = "run_ffmpeg_export"
     description = (
-        "执行单条 ffmpeg bash 命令并导出视频。"
-        "应优先先读取 ffmpeg skill，再通过 draft_ffmpeg_command 生成或修正命令。"
-        "输入视频路径与输出文件路径由服务端自动注入；若要烧录字幕，使用 {{subtitle_file}}。"
-        "若本次 action_input 为空，将默认执行当前 task board 中最近一次 draft_ffmpeg_command 生成的命令。"
-        "推荐传入 JSON：{\"command_template\":\"-vf ... -c:v ...\",\"output_extension\":\"mp4\",\"summary\":\"...\",\"needs_subtitle_file\":true}。"
-        "如果参数不合法或执行失败，工具会返回错误观察结果，代理必须根据错误信息修正后重试。"
+        "执行一次 ffmpeg 导出。"
+        "action_input 必须是 JSON：{\"command_template\":\"-filter_complex \\\"...\\\" -map \\\"[vout]\\\" -map \\\"[aout]\\\" -c:v libx264 ...\",\"output_extension\":\"mp4\",\"summary\":\"...\",\"needs_subtitle_file\":true}。"
+        "不要传 ffmpeg、不要传 -i、不要传输出路径；服务端会自动注入。"
     )
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_run_bash_ffmpeg(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class RenderClipSegmentTool(CaptionAssistantTool):
+    name = "render_clip_segment"
+    description = (
+        "逐个渲染单个视频片段。"
+        "action_input 推荐为 JSON：{\"segment_id\":\"seg_1\",\"speed\":1.25,\"drop_audio\":false,\"notes\":\"根据上一条错误修正\"}。"
+        "如果不传 segment_id，服务端会自动选择下一个待处理片段。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_render_clip_segment(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input,
+        )
+
+
+class MergeRenderedSegmentsTool(CaptionAssistantTool):
+    name = "merge_rendered_segments"
+    description = (
+        "合并已经渲染完成的所有片段，并在需要时烧录字幕生成最终成片。"
+        "action_input 推荐为 JSON：{\"burn_subtitles\":true,\"drop_audio\":false,\"notes\":\"...\"}。"
+    )
+
+    async def execute(self, action_input: str) -> str:
+        return await self.context.assistant._tool_merge_rendered_segments(
             self.context.session,
             self.context.turn,
             self.context.working_state,
@@ -598,7 +764,6 @@ class CaptionConversationAssistant:
         self.store = CaptionSessionStore()
         self.events = CaptionEventBroker()
         self._adapter_factory = AIAdapterFactory()
-        self._ffmpeg_skill_path = Path(__file__).resolve().parents[3] / "skills" / "ffmpeg-usage" / "SKILL.md"
         self._session_locks: Dict[str, asyncio.Lock] = {}
         self._completion_events: Dict[str, asyncio.Event] = {}
         self._meta_lock = Lock()
@@ -695,6 +860,15 @@ class CaptionConversationAssistant:
                 working_state.request_summary = user_prompt.strip()
                 working_state.updated_at = _utcnow()
 
+                if self._should_ask_user_goal(session, user_prompt):
+                    await self._commit_completed_turn(
+                        session=session,
+                        turn=turn,
+                        working_state=working_state,
+                        final_text=self._build_goal_clarification_reply(),
+                    )
+                    return
+
                 plan_payload = await self._build_plan_proposal(session, working_state, user_prompt)
                 if not plan_payload.get("is_supported_request", True):
                     turn.plan_summary = self._build_turn_plan_summary(plan_payload)
@@ -710,6 +884,7 @@ class CaptionConversationAssistant:
                     plan_payload.get("selected_ids") or [],
                     plan_payload,
                 )
+                targets = self._enforce_prerequisites(session, working_state, user_prompt, targets)
                 turn.plan_summary = self._build_turn_plan_summary(plan_payload)
                 turn.task_board = self._create_turn_task_board(plan_payload, targets, user_prompt=user_prompt)
                 targets = self._merge_targets_with_task_board(targets, turn.task_board)
@@ -802,6 +977,14 @@ class CaptionConversationAssistant:
             )
             self._complete_workflow_artifact(working_state, "editing_plan", "剪辑执行方案已更新。")
             self._set_task_status(turn, "editing_plan", "done", notes="剪辑方案已通过兜底流程补全。")
+        if targets["update_edited_video"] and not working_state.executable_edit.segments:
+            await self._tool_derive_clip_segments(
+                turn,
+                session,
+                working_state,
+                user_prompt,
+                user_prompt,
+            )
         if targets["update_title"] and not working_state.english_title:
             working_state.english_title = await self._generate_english_title(
                 session, working_state, "补全英文标题。"
@@ -832,10 +1015,10 @@ class CaptionConversationAssistant:
             )
             self._set_task_status(
                 turn,
-                "run_ffmpeg",
+                "run_video_edit_subagent",
                 "blocked",
                 notes=working_state.edited_video.error_message,
-                current_focus="run_ffmpeg",
+                current_focus="run_video_edit_subagent",
                 blocked_reason=working_state.edited_video.error_message,
             )
 
@@ -956,9 +1139,8 @@ class CaptionConversationAssistant:
             RunKeyframeVisionSubagentTool(context),
             ReadVideoContextTool(context),
             ReadManualTool(context),
-            ReadSkillFfmpegUsageTool(context),
             ReadCurrentArtifactsTool(context),
-            DraftFfmpegCommandTool(context),
+            DeriveClipSegmentsTool(context),
             CreateTaskBoardTool(context),
             ReadTaskBoardTool(context),
             UpdateTaskStatusTool(context),
@@ -966,7 +1148,32 @@ class CaptionConversationAssistant:
             WriteEditPlanTool(context),
             WriteTitleTool(context),
             WriteTagsTool(context),
-            RunBashFfmpegTool(context),
+            RunVideoEditSubagentTool(context),
+        ]:
+            registry.register(tool.to_spec())
+        return registry
+
+    def _build_video_edit_tool_registry(
+        self,
+        *,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+    ) -> ToolRegistry:
+        registry = ToolRegistry()
+        context = CaptionToolContext(
+            assistant=self,
+            session=session,
+            turn=turn,
+            working_state=working_state,
+            user_prompt=user_prompt,
+            targets={},
+        )
+        for tool in [
+            ReadVideoEditContextTool(context),
+            RenderClipSegmentTool(context),
+            MergeRenderedSegmentsTool(context),
         ]:
             registry.register(tool.to_spec())
         return registry
@@ -1002,6 +1209,9 @@ class CaptionConversationAssistant:
         self,
         session: CaptionSession,
         working_state: GlobalEditingState,
+        *,
+        interval_seconds: int | None = None,
+        max_frames: int | None = None,
     ) -> None:
         self._update_workflow_artifact(
             working_state,
@@ -1022,11 +1232,11 @@ class CaptionConversationAssistant:
         working_state.keyframes = await asyncio.to_thread(
             extract_keyframes,
             session.video_path,
-            settings.keyframe_interval_seconds,
+            interval_seconds or settings.keyframe_interval_seconds,
             None,
             settings.keyframe_scene_threshold,
         )
-        working_state.frame_analyses = await self._analyze_video_frames(working_state)
+        working_state.frame_analyses = await self._analyze_video_frames(working_state, max_frames=max_frames)
         working_state.video_summary = await self._summarize_video(session, working_state)
         self._complete_workflow_artifact(
             working_state,
@@ -1039,10 +1249,10 @@ class CaptionConversationAssistant:
             "视频摘要已生成。",
         )
 
-    async def _analyze_video_frames(self, working_state: GlobalEditingState) -> List[str]:
+    async def _analyze_video_frames(self, working_state: GlobalEditingState, *, max_frames: int | None = None) -> List[str]:
         analysis_frames = select_keyframes_for_analysis(
             working_state.keyframes,
-            max_frames=settings.max_keyframes,
+            max_frames=max_frames or settings.max_keyframes,
         )
         analyses: List[str] = []
         for index, keyframe in enumerate(analysis_frames, start=1):
@@ -1094,21 +1304,271 @@ class CaptionConversationAssistant:
     async def _tool_read_manual(self, session: CaptionSession) -> str:
         return session.product_manual or "用户未提供说明书。"
 
-    async def _tool_read_skill_ffmpeg_usage(self) -> str:
-        if not self._ffmpeg_skill_path.exists():
-            return "未找到 ffmpeg skill 文档：skills/ffmpeg-usage/SKILL.md"
-        return self._ffmpeg_skill_path.read_text(encoding="utf-8")
-
     async def _tool_read_current_artifacts(self, working_state: GlobalEditingState) -> str:
         return (
             f"当前字幕草稿：\n{working_state.subtitle_draft or '暂无'}\n\n"
             f"当前剪辑方案：\n{working_state.editing_plan or '暂无'}\n\n"
+            f"当前片段映射：\n{self._summarize_clip_segments(working_state.executable_edit.segments) or '暂无'}\n\n"
             f"当前英文标题：\n{working_state.english_title or '暂无'}\n\n"
             f"当前标签：\n{', '.join(working_state.tags) if working_state.tags else '暂无'}\n\n"
             f"当前导出视频：\n{working_state.edited_video.download_url or '暂无'}"
         )
 
-    async def _tool_draft_ffmpeg_command(
+    async def _tool_run_video_edit_subagent(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+        action_input: str,
+    ) -> str:
+        subagent = VideoEditExportSubAgent(
+            VideoEditSubAgentContext(
+                assistant=self,
+                session=session,
+                turn=turn,
+                working_state=working_state,
+                user_prompt=user_prompt,
+            )
+        )
+        return await subagent.run(action_input)
+
+    async def _tool_read_video_edit_context(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+    ) -> str:
+        del turn
+        export_dir = os.path.join(settings.export_dir, session.session_id)
+        payload = {
+            "video_path": session.video_path,
+            "output_dir": export_dir,
+            "platform": session.platform,
+            "aspect_ratio": working_state.executable_edit.aspect_ratio,
+            "burn_subtitles": working_state.executable_edit.burn_subtitles,
+            "subtitle_available": bool(working_state.subtitle_draft.strip()),
+            "subtitle_preview": working_state.subtitle_draft[:1200],
+            "segments": [asdict(segment) for segment in working_state.executable_edit.segments],
+            "rendered_segments": [asdict(item) for item in working_state.executable_edit.rendered_segments],
+            "next_pending_segment": asdict(next_segment) if (next_segment := self._next_pending_segment(working_state.executable_edit)) else None,
+            "last_attempted_command": working_state.edited_video.command,
+            "last_error": working_state.edited_video.error_message,
+            "merge_error": working_state.executable_edit.merge_error_message,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _tool_render_clip_segment(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+        action_input: str,
+    ) -> str:
+        decision = working_state.executable_edit
+        if not decision.segments:
+            raise RuntimeError("当前没有可渲染的片段映射。")
+        self._ensure_rendered_segment_entries(decision)
+
+        payload = self._parse_json_object(action_input)
+        segment_id = str(payload.get("segment_id", "")).strip() if isinstance(payload, dict) else ""
+        drop_audio = bool(payload.get("drop_audio")) if isinstance(payload, dict) else False
+        speed_override = payload.get("speed") if isinstance(payload, dict) else None
+        notes = str(payload.get("notes", "")).strip() if isinstance(payload, dict) else ""
+
+        target_segment = None
+        if segment_id:
+            for segment in decision.segments:
+                if segment.id == segment_id:
+                    target_segment = segment
+                    break
+        if target_segment is None:
+            target_segment = self._next_pending_segment(decision)
+        if target_segment is None:
+            return "所有片段都已经渲染完成。"
+
+        rendered = self._get_rendered_segment(decision, target_segment.id)
+        if rendered is None:
+            rendered = RenderedClipSegment(segment_id=target_segment.id)
+            decision.rendered_segments.append(rendered)
+
+        self._set_task_status(
+            turn,
+            "run_video_edit_subagent",
+            "doing",
+            notes=f"正在渲染片段 {target_segment.id}。{notes}".strip(),
+            current_focus="run_video_edit_subagent",
+        )
+        rendered.status = "doing"
+        rendered.updated_at = _utcnow()
+
+        session_export_dir = os.path.join(settings.export_dir, session.session_id)
+        segment_export_dir = os.path.join(session_export_dir, "segments")
+        os.makedirs(segment_export_dir, exist_ok=True)
+        output_name = f"{turn.turn_id}_{target_segment.id}.mp4"
+        output_path = os.path.join(segment_export_dir, output_name)
+        command_args = self._build_segment_render_command_args(
+            session=session,
+            segment=target_segment,
+            output_path=output_path,
+            aspect_ratio=decision.aspect_ratio,
+            drop_audio=drop_audio,
+            speed_override=float(speed_override) if speed_override is not None else None,
+        )
+        rendered.command = shlex.join(command_args)
+        try:
+            await self._run_ffmpeg_command(command_args)
+            if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+                raise RuntimeError("片段渲染完成，但未生成有效片段文件。")
+            rendered.status = "done"
+            rendered.file_name = output_name
+            rendered.storage_path = output_path
+            rendered.error_message = ""
+            rendered.summary = target_segment.purpose or target_segment.visual_instruction or target_segment.subtitle_text
+            rendered.size_bytes = os.path.getsize(output_path)
+            rendered.updated_at = _utcnow()
+            decision.updated_at = rendered.updated_at
+            return (
+                f"片段 {target_segment.id} 已渲染完成。"
+                f"\n原视频：{target_segment.source_start}-{target_segment.source_end}"
+                f"\n成片：{target_segment.timeline_start}-{target_segment.timeline_end}"
+                f"\n文件：{output_name}"
+            )
+        except Exception as exc:
+            rendered.status = "blocked"
+            rendered.error_message = str(exc)
+            rendered.updated_at = _utcnow()
+            decision.updated_at = rendered.updated_at
+            working_state.edited_video.error_message = str(exc)
+            return (
+                f"片段 {target_segment.id} 渲染失败，请基于错误修正后重试："
+                f"\n错误：{exc}"
+                f"\n片段：{json.dumps(asdict(target_segment), ensure_ascii=False)}"
+            )
+
+    async def _tool_merge_rendered_segments(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+        action_input: str,
+    ) -> str:
+        del user_prompt
+        decision = working_state.executable_edit
+        self._ensure_rendered_segment_entries(decision)
+        if not self._all_segments_rendered(decision):
+            raise RuntimeError("仍有片段未完成渲染，不能执行最终合并。")
+
+        payload = self._parse_json_object(action_input)
+        burn_subtitles = decision.burn_subtitles if not isinstance(payload, dict) else bool(payload.get("burn_subtitles", decision.burn_subtitles))
+        drop_audio = bool(payload.get("drop_audio")) if isinstance(payload, dict) else False
+
+        session_export_dir = os.path.join(settings.export_dir, session.session_id)
+        os.makedirs(session_export_dir, exist_ok=True)
+        concat_list_path = os.path.join(session_export_dir, f"{turn.turn_id}_segments.txt")
+        merged_path = os.path.join(session_export_dir, f"{turn.turn_id}_merged.mp4")
+        final_path = os.path.join(session_export_dir, f"{turn.turn_id}.mp4")
+
+        with open(concat_list_path, "w", encoding="utf-8") as file:
+            for segment in decision.segments:
+                rendered = self._get_rendered_segment(decision, segment.id)
+                if rendered is None or not rendered.storage_path:
+                    raise RuntimeError(f"片段 {segment.id} 尚未渲染完成。")
+                file.write(f"file {shlex.quote(rendered.storage_path)}\n")
+
+        merge_args = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concat_list_path,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+        ]
+        if drop_audio:
+            merge_args.extend(["-an"])
+        else:
+            merge_args.extend(["-c:a", "aac", "-b:a", "128k"])
+        merge_args.append(merged_path)
+
+        try:
+            await self._run_ffmpeg_command(merge_args)
+            decision.merge_command = shlex.join(merge_args)
+            decision.merged_segments_path = merged_path
+            decision.merge_error_message = ""
+
+            subtitle_path = ""
+            if burn_subtitles and working_state.subtitle_draft.strip():
+                subtitle_path = self._write_subtitle_sidecar(turn.turn_id, working_state.subtitle_draft)
+            if subtitle_path:
+                escaped_subtitle = self._escape_subtitle_filter_path(subtitle_path)
+                subtitle_args = [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    merged_path,
+                    "-vf",
+                    f"subtitles={escaped_subtitle}",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "23",
+                ]
+                if drop_audio:
+                    subtitle_args.extend(["-an"])
+                else:
+                    subtitle_args.extend(["-c:a", "aac", "-b:a", "128k"])
+                subtitle_args.append(final_path)
+                await self._run_ffmpeg_command(subtitle_args)
+                final_command = shlex.join(subtitle_args)
+            else:
+                final_command = shlex.join(merge_args)
+                if merged_path != final_path:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    os.replace(merged_path, final_path)
+
+            working_state.edited_video = EditedVideoArtifact(
+                file_name=os.path.basename(final_path),
+                download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video",
+                storage_path=final_path,
+                command=final_command,
+                summary=decision.summary or turn.user_prompt.strip(),
+                error_message="",
+                size_bytes=os.path.getsize(final_path),
+            )
+            self._complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
+            self._set_task_status(turn, "verify_export", "done", notes="已生成可下载成片。")
+            return (
+                "片段已合并并生成最终成片。"
+                f"\n文件名：{working_state.edited_video.file_name}"
+                f"\n下载地址：{working_state.edited_video.download_url}"
+            )
+        except Exception as exc:
+            decision.merge_error_message = str(exc)
+            working_state.edited_video.error_message = str(exc)
+            self._update_workflow_artifact(
+                working_state,
+                "edited_video",
+                status="error",
+                detail=str(exc),
+                requested=True,
+                needs_refresh=False,
+            )
+            return f"片段合并失败：{exc}"
+
+    async def _tool_derive_clip_segments(
         self,
         turn: AgentTurn,
         session: CaptionSession,
@@ -1117,47 +1577,37 @@ class CaptionConversationAssistant:
         action_input: str,
     ) -> str:
         try:
-            self._set_task_status(turn, "draft_ffmpeg_command", "doing", notes="正在起草 ffmpeg 导出命令。")
+            self._set_task_status(turn, "derive_clip_segments", "doing", notes="正在把成片方案映射为原视频片段。")
             guidance = action_input.strip() or user_prompt
-            prompt = (
-                DRAFT_FFMPEG_COMMAND_PROMPT
-                + _prompt_block("用户需求", guidance)
-                + _prompt_block("平台", session.platform)
-                + _prompt_block("输入视频路径", session.video_path)
-                + _prompt_block("输出目录", os.path.join(settings.export_dir, session.session_id))
-                + _prompt_block("说明书", session.product_manual or "无")
-                + _prompt_block("视频摘要", working_state.video_summary or "无")
-                + _prompt_block("剪辑方案", working_state.editing_plan or "无")
-                + _prompt_block("字幕草稿", working_state.subtitle_draft or "无")
-                + _prompt_block("上一次导出命令", working_state.edited_video.command or "无")
-                + _prompt_block("上一次导出错误", working_state.edited_video.error_message or "无")
-                + _prompt_block("ffmpeg 技能文档", await self._tool_read_skill_ffmpeg_usage())
+            working_state.executable_edit = await self._derive_executable_edit_decision(
+                session=session,
+                working_state=working_state,
+                guidance=guidance,
+                user_prompt=user_prompt,
             )
-            raw = await self._text_complete(
-                prompt,
-                system_prompt=CAPTION_ASSISTANT_SYSTEM_PROMPT,
-                require_json=True,
+            self._complete_workflow_artifact(
+                working_state,
+                "clip_segments",
+                f"已生成 {len(working_state.executable_edit.segments)} 个原视频片段映射。",
             )
-            payload = self._parse_ffmpeg_command_input(raw)
-            command_json = json.dumps(payload, ensure_ascii=False)
             self._set_task_status(
                 turn,
-                "draft_ffmpeg_command",
+                "derive_clip_segments",
                 "done",
-                notes=command_json,
-                current_focus="run_ffmpeg",
+                notes=self._summarize_clip_segments(working_state.executable_edit.segments)[:3000],
+                current_focus="run_video_edit_subagent",
             )
-            return command_json
+            return json.dumps(asdict(working_state.executable_edit), ensure_ascii=False)
         except Exception as exc:
             self._set_task_status(
                 turn,
-                "draft_ffmpeg_command",
+                "derive_clip_segments",
                 "blocked",
                 notes=str(exc),
-                current_focus="draft_ffmpeg_command",
+                current_focus="derive_clip_segments",
                 blocked_reason=str(exc),
             )
-            return f"ffmpeg 命令起草失败，请基于当前上下文修正后再试：\n错误：{exc}"
+            return f"片段映射失败：{exc}"
 
     async def _tool_create_task_board(
         self,
@@ -1279,13 +1729,10 @@ class CaptionConversationAssistant:
     ) -> str:
         attempted_command = ""
         try:
-            self._set_task_status(turn, "run_ffmpeg", "doing", notes="正在执行 ffmpeg 导出。")
+            self._set_task_status(turn, "run_video_edit_subagent", "doing", notes="正在执行 ffmpeg 导出。")
             if shutil.which("ffmpeg") is None:
                 raise RuntimeError("当前运行环境未安装 ffmpeg，无法执行视频导出。")
 
-            if not action_input.strip():
-                drafted = self._find_task_item(turn, "draft_ffmpeg_command")
-                action_input = drafted.notes if drafted and drafted.notes else action_input
             payload = self._parse_ffmpeg_command_input(action_input)
             command_template = payload["command_template"]
             needs_subtitle_file = payload["needs_subtitle_file"]
@@ -1302,14 +1749,14 @@ class CaptionConversationAssistant:
             os.makedirs(session_export_dir, exist_ok=True)
             output_name = f"{turn.turn_id}.{output_extension}"
             output_path = os.path.join(session_export_dir, output_name)
-            command = self._materialize_ffmpeg_command(
+            command_args = self._materialize_ffmpeg_command_args(
                 command_template=command_template,
                 input_video=session.video_path,
                 output_video=output_path,
                 subtitle_file=subtitle_path or None,
             )
-            attempted_command = command
-            await self._run_bash_command(command)
+            attempted_command = shlex.join(command_args)
+            await self._run_ffmpeg_command(command_args)
             if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
                 raise RuntimeError("ffmpeg 命令执行完成，但未生成有效导出文件。")
 
@@ -1317,13 +1764,13 @@ class CaptionConversationAssistant:
                 file_name=output_name,
                 download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video",
                 storage_path=output_path,
-                command=command,
+                command=attempted_command,
                 summary=summary,
                 error_message="",
                 size_bytes=os.path.getsize(output_path),
             )
             self._complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
-            self._set_task_status(turn, "run_ffmpeg", "done", notes="ffmpeg 导出已完成。", current_focus="verify_export")
+            self._set_task_status(turn, "run_video_edit_subagent", "done", notes="ffmpeg 导出已完成。", current_focus="verify_export")
             self._set_task_status(turn, "verify_export", "done", notes="已生成可下载成片。")
             return (
                 "剪辑视频导出完成。"
@@ -1352,10 +1799,10 @@ class CaptionConversationAssistant:
             )
             self._set_task_status(
                 turn,
-                "run_ffmpeg",
+                "run_video_edit_subagent",
                 "blocked",
                 notes=str(exc),
-                current_focus="run_ffmpeg",
+                current_focus="run_video_edit_subagent",
                 blocked_reason=str(exc),
             )
             self._set_task_status(
@@ -1471,6 +1918,7 @@ class CaptionConversationAssistant:
             + _prompt_block("关键帧分析", json.dumps(working_state.frame_analyses[:12], ensure_ascii=False))
             + _prompt_block("最新字幕草稿全文", working_state.subtitle_draft[:6000] if working_state.subtitle_draft else "无")
             + _prompt_block("最新剪辑方案全文", working_state.editing_plan[:6000] if working_state.editing_plan else "无")
+            + _prompt_block("最新片段映射", self._summarize_clip_segments(working_state.executable_edit.segments) or "无")
             + _prompt_block("最新英文标题", working_state.english_title or "无")
             + _prompt_block("最新标签", json.dumps(working_state.tags, ensure_ascii=False))
             + _prompt_block("导出视频", json.dumps({
@@ -1508,6 +1956,333 @@ class CaptionConversationAssistant:
         )
         return self._coerce_plan_proposal(working_state, user_prompt, parsed)
 
+    async def _derive_executable_edit_decision(
+        self,
+        *,
+        session: CaptionSession,
+        working_state: GlobalEditingState,
+        guidance: str,
+        user_prompt: str,
+    ) -> ExecutableEditDecision:
+        prompt = (
+            DERIVE_CLIP_SEGMENTS_PROMPT
+            + _prompt_block("用户需求", guidance)
+            + _prompt_block("平台", session.platform)
+            + _prompt_block("视频摘要", working_state.video_summary or "无")
+            + _prompt_block("关键帧分析", "\n".join(working_state.frame_analyses) or "无")
+            + _prompt_block("当前字幕草稿", working_state.subtitle_draft or "无")
+            + _prompt_block("当前剪辑方案", working_state.editing_plan or "无")
+            + _prompt_block("历史片段映射", self._summarize_clip_segments(working_state.executable_edit.segments) or "无")
+        )
+        raw = await self._text_complete(
+            prompt,
+            system_prompt=CAPTION_ASSISTANT_SYSTEM_PROMPT,
+            require_json=True,
+        )
+        decision = self._coerce_executable_edit_decision(self._parse_json_object(raw))
+        if self._needs_dense_keyframe_refresh(user_prompt, decision):
+            await self._prepare_video_context(
+                session,
+                working_state,
+                interval_seconds=max(1, settings.keyframe_interval_seconds // 2),
+                max_frames=max(settings.max_keyframes + 4, settings.max_keyframes * 2),
+            )
+            dense_prompt = (
+                DERIVE_CLIP_SEGMENTS_PROMPT
+                + _prompt_block("用户需求", guidance)
+                + _prompt_block("平台", session.platform)
+                + _prompt_block("视频摘要", working_state.video_summary or "无")
+                + _prompt_block("关键帧分析", "\n".join(working_state.frame_analyses) or "无")
+                + _prompt_block("当前字幕草稿", working_state.subtitle_draft or "无")
+                + _prompt_block("当前剪辑方案", working_state.editing_plan or "无")
+                + _prompt_block("历史片段映射", self._summarize_clip_segments(decision.segments) or "无")
+                + _prompt_block("额外要求", "上一次片段映射过少。请基于更密的关键帧分析，优先拆出多个单主题片段，并通过 speed 调整控制总时长。")
+            )
+            dense_raw = await self._text_complete(
+                dense_prompt,
+                system_prompt=CAPTION_ASSISTANT_SYSTEM_PROMPT,
+                require_json=True,
+            )
+            decision = self._coerce_executable_edit_decision(self._parse_json_object(dense_raw))
+        self._normalize_executable_edit_decision(decision)
+        return decision
+
+    def _coerce_executable_edit_decision(self, parsed: Dict[str, Any]) -> ExecutableEditDecision:
+        if not isinstance(parsed, dict):
+            raise RuntimeError("片段映射结果不是合法 JSON 对象。")
+        raw_segments = parsed.get("segments")
+        if not isinstance(raw_segments, list) or not raw_segments:
+            raise RuntimeError("片段映射结果缺少 segments。")
+
+        segments: List[ClipSegment] = []
+        for index, item in enumerate(raw_segments, start=1):
+            if not isinstance(item, dict):
+                continue
+            source_start = str(item.get("source_start", "")).strip()
+            source_end = str(item.get("source_end", "")).strip()
+            timeline_start = str(item.get("timeline_start", "")).strip()
+            timeline_end = str(item.get("timeline_end", "")).strip()
+            if not source_start or not source_end or not timeline_start or not timeline_end:
+                continue
+            speed = float(item.get("speed", 1.0) or 1.0)
+            if speed <= 0:
+                speed = 1.0
+            segments.append(
+                ClipSegment(
+                    id=str(item.get("id", f"seg_{index}")).strip() or f"seg_{index}",
+                    source_start=source_start,
+                    source_end=source_end,
+                    timeline_start=timeline_start,
+                    timeline_end=timeline_end,
+                    output_duration_seconds=float(item.get("output_duration_seconds", 0) or 0),
+                    purpose=str(item.get("purpose", "")).strip(),
+                    visual_instruction=str(item.get("visual_instruction", "")).strip(),
+                    speed=speed,
+                    transition_to_next=str(item.get("transition_to_next", "hard_cut")).strip() or "hard_cut",
+                    subtitle_text=str(item.get("subtitle_text", "")).strip(),
+                )
+            )
+
+        if not segments:
+            raise RuntimeError("片段映射结果中没有可用 segment。")
+
+        return ExecutableEditDecision(
+            summary=str(parsed.get("summary", "")).strip(),
+            total_duration_seconds=float(parsed.get("total_duration_seconds", 0) or 0),
+            aspect_ratio=str(parsed.get("aspect_ratio", "9:16")).strip() or "9:16",
+            burn_subtitles=bool(parsed.get("burn_subtitles", True)),
+            segments=segments,
+            rendered_segments=[RenderedClipSegment(segment_id=segment.id) for segment in segments],
+            updated_at=_utcnow(),
+        )
+
+    def _normalize_executable_edit_decision(self, decision: ExecutableEditDecision) -> None:
+        decision.segments.sort(key=lambda item: self._timestamp_to_seconds(item.timeline_start))
+        for segment in decision.segments:
+            source_duration = self._timestamp_to_seconds(segment.source_end) - self._timestamp_to_seconds(segment.source_start)
+            speed = max(0.5, min(2.0, float(segment.speed or 1.0)))
+            segment.speed = speed
+            if segment.output_duration_seconds <= 0:
+                segment.output_duration_seconds = max(0.2, source_duration / speed)
+        if decision.total_duration_seconds <= 0 and decision.segments:
+            decision.total_duration_seconds = max(
+                self._timestamp_to_seconds(segment.timeline_end) for segment in decision.segments
+            )
+        self._ensure_rendered_segment_entries(decision)
+        decision.merged_segments_path = ""
+        decision.merge_command = ""
+        decision.merge_error_message = ""
+        decision.updated_at = _utcnow()
+
+    def _build_ffmpeg_command_payload(
+        self,
+        *,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        summary: str,
+    ) -> Dict[str, Any]:
+        decision = working_state.executable_edit
+        if not decision.segments:
+            raise RuntimeError("当前没有可执行片段映射。")
+
+        subtitle_required = bool(decision.burn_subtitles and working_state.subtitle_draft.strip())
+        filter_complex, output_options = self._build_filter_complex_for_segments(
+            segments=decision.segments,
+            aspect_ratio=decision.aspect_ratio,
+            subtitle_file="{{subtitle_file}}" if subtitle_required else None,
+        )
+        command_template = (
+            f'-filter_complex "{filter_complex}" '
+            f'-map "[vout]" -map "[aout]" '
+            f'{output_options}'
+        ).strip()
+        return {
+            "command_template": command_template,
+            "output_extension": "mp4",
+            "summary": summary.strip() or decision.summary or turn.user_prompt.strip(),
+            "needs_subtitle_file": subtitle_required,
+        }
+
+    def _build_segment_render_command_args(
+        self,
+        *,
+        session: CaptionSession,
+        segment: ClipSegment,
+        output_path: str,
+        aspect_ratio: str,
+        drop_audio: bool,
+        speed_override: float | None = None,
+    ) -> List[str]:
+        width, height = self._resolution_for_aspect_ratio(aspect_ratio)
+        start = self._timestamp_to_seconds(segment.source_start)
+        end = self._timestamp_to_seconds(segment.source_end)
+        if end <= start:
+            raise RuntimeError(f"片段 {segment.id} 的 source_end 必须大于 source_start。")
+        speed = max(0.5, min(2.0, float(speed_override if speed_override is not None else (segment.speed or 1.0))))
+        setpts = "PTS-STARTPTS" if abs(speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{speed}"
+        vf = (
+            f"setpts={setpts},"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        )
+        args = [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start),
+            "-to",
+            str(end),
+            "-i",
+            session.video_path,
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+        ]
+        has_audio = self._video_has_audio_stream(session.video_path)
+        if drop_audio or not has_audio:
+            args.extend(["-an"])
+        else:
+            args.extend(["-map", "0:v:0", "-map", "0:a:0"])
+            if abs(speed - 1.0) >= 1e-6:
+                args.extend(["-af", ",".join(self._build_atempo_filters(speed))])
+            args.extend(["-c:a", "aac", "-b:a", "128k", "-shortest"])
+        args.append(output_path)
+        return args
+
+    def _build_filter_complex_for_segments(
+        self,
+        *,
+        segments: List[ClipSegment],
+        aspect_ratio: str,
+        subtitle_file: str | None,
+    ) -> tuple[str, str]:
+        width, height = self._resolution_for_aspect_ratio(aspect_ratio)
+        parts: List[str] = []
+        concat_inputs: List[str] = []
+        for index, segment in enumerate(segments):
+            start = self._timestamp_to_seconds(segment.source_start)
+            end = self._timestamp_to_seconds(segment.source_end)
+            if end <= start:
+                raise RuntimeError(f"片段 {segment.id} 的 source_end 必须大于 source_start。")
+            speed = max(0.5, min(2.0, float(segment.speed or 1.0)))
+            video_pts = "PTS-STARTPTS" if abs(speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{speed}"
+            audio_filters = [f"atrim=start={start}:end={end}", "asetpts=PTS-STARTPTS"]
+            if abs(speed - 1.0) >= 1e-6:
+                audio_filters.extend(self._build_atempo_filters(speed))
+            parts.append(
+                f"[0:v]trim=start={start}:end={end},setpts={video_pts},"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2[v{index}]"
+            )
+            parts.append(f"[0:a]{','.join(audio_filters)}[a{index}]")
+            concat_inputs.append(f"[v{index}][a{index}]")
+
+        parts.append(f"{''.join(concat_inputs)}concat=n={len(segments)}:v=1:a=1[vcat][aout]")
+        if subtitle_file:
+            escaped_subtitle = self._escape_subtitle_filter_path(subtitle_file)
+            parts.append(f"[vcat]subtitles='{escaped_subtitle}'[vout]")
+        else:
+            parts.append("[vcat]null[vout]")
+
+        return ";".join(parts), "-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -movflags +faststart"
+
+    def _build_atempo_filters(self, speed: float) -> List[str]:
+        remaining = speed
+        filters: List[str] = []
+        while remaining > 2.0:
+            filters.append("atempo=2.0")
+            remaining /= 2.0
+        while remaining < 0.5:
+            filters.append("atempo=0.5")
+            remaining /= 0.5
+        filters.append(f"atempo={remaining:.4f}".rstrip("0").rstrip("."))
+        return filters
+
+    def _resolution_for_aspect_ratio(self, aspect_ratio: str) -> tuple[int, int]:
+        mapping = {
+            "9:16": (1080, 1920),
+            "1:1": (1080, 1080),
+            "16:9": (1920, 1080),
+        }
+        return mapping.get(aspect_ratio.strip(), (1080, 1920))
+
+    def _timestamp_to_seconds(self, value: str) -> float:
+        parts = value.strip().split(":")
+        if len(parts) == 2:
+            hours = 0
+            minutes, seconds = parts
+        elif len(parts) == 3:
+            hours, minutes, seconds = parts
+        else:
+            raise RuntimeError(f"无法解析时间戳：{value}")
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+    def _escape_subtitle_filter_path(self, path: str) -> str:
+        return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+    def _summarize_clip_segments(self, segments: List[ClipSegment]) -> str:
+        if not segments:
+            return ""
+        lines = []
+        for segment in segments[:12]:
+            lines.append(
+                f"{segment.id}: 原视频 {segment.source_start}-{segment.source_end} -> "
+                f"成片 {segment.timeline_start}-{segment.timeline_end} | {segment.purpose or segment.visual_instruction or '无说明'}"
+            )
+        return "\n".join(lines)
+
+    def _get_rendered_segment(self, decision: ExecutableEditDecision, segment_id: str) -> RenderedClipSegment | None:
+        for item in decision.rendered_segments:
+            if item.segment_id == segment_id:
+                return item
+        return None
+
+    def _ensure_rendered_segment_entries(self, decision: ExecutableEditDecision) -> None:
+        known_ids = {item.segment_id for item in decision.rendered_segments}
+        for segment in decision.segments:
+            if segment.id not in known_ids:
+                decision.rendered_segments.append(RenderedClipSegment(segment_id=segment.id))
+        decision.rendered_segments = [
+            item for item in decision.rendered_segments if any(segment.id == item.segment_id for segment in decision.segments)
+        ]
+
+    def _next_pending_segment(self, decision: ExecutableEditDecision) -> ClipSegment | None:
+        self._ensure_rendered_segment_entries(decision)
+        for segment in decision.segments:
+            rendered = self._get_rendered_segment(decision, segment.id)
+            if rendered and rendered.status in {"todo", "blocked"}:
+                return segment
+        return None
+
+    def _all_segments_rendered(self, decision: ExecutableEditDecision) -> bool:
+        self._ensure_rendered_segment_entries(decision)
+        if not decision.segments:
+            return False
+        return all(
+            (rendered := self._get_rendered_segment(decision, segment.id)) is not None
+            and rendered.status == "done"
+            and rendered.storage_path
+            for segment in decision.segments
+        )
+
+    def _summarize_rendered_segments(self, decision: ExecutableEditDecision) -> str:
+        self._ensure_rendered_segment_entries(decision)
+        lines: List[str] = []
+        for segment in decision.segments[:20]:
+            rendered = self._get_rendered_segment(decision, segment.id)
+            if rendered is None:
+                continue
+            lines.append(
+                f"{segment.id}: status={rendered.status}, file={rendered.file_name or '无'}, error={rendered.error_message[:120] or '无'}"
+            )
+        return "\n".join(lines)
+
     def _parse_ffmpeg_command_input(self, action_input: str) -> Dict[str, Any]:
         parsed = self._parse_json_object(action_input)
         if isinstance(parsed, dict) and parsed.get("command_template"):
@@ -1535,8 +2310,10 @@ class CaptionConversationAssistant:
             raise RuntimeError("不需要在 ffmpeg 命令里显式传入 -i 输入路径，服务端会自动注入。")
         if normalized_template.strip() == "ffmpeg":
             raise RuntimeError("ffmpeg 命令模板缺少处理参数。")
-        if any(token in normalized_template for token in ["&&", "||", ";", "`", "$(", "|", ">", "<"]):
-            raise RuntimeError("ffmpeg 命令模板包含不被允许的 shell 控制符。")
+        if "\n" in normalized_template or "\r" in normalized_template or "\x00" in normalized_template:
+            raise RuntimeError("ffmpeg 命令模板包含非法控制字符。")
+        if any(token in normalized_template for token in ["&&", "||", "`", "$("]):
+            raise RuntimeError("ffmpeg 命令模板包含不被允许的 shell 执行语法。")
         if needs_subtitle_file and "{{subtitle_file}}" not in normalized_template:
             raise RuntimeError("needs_subtitle_file=true 时，命令模板必须包含 {{subtitle_file}} 占位符。")
         if output_extension.lower() not in {"mp4", "mov", "webm", "mkv"}:
@@ -1587,28 +2364,31 @@ class CaptionConversationAssistant:
             hours, minutes, seconds = parts
         return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d},000"
 
-    def _materialize_ffmpeg_command(
+    def _materialize_ffmpeg_command_args(
         self,
         *,
         command_template: str,
         input_video: str,
         output_video: str,
         subtitle_file: str | None,
-    ) -> str:
+    ) -> List[str]:
         args = command_template[len("ffmpeg") :].strip() if command_template.startswith("ffmpeg") else command_template.strip()
         if "{{subtitle_file}}" in args:
             if not subtitle_file:
                 raise RuntimeError("ffmpeg 命令要求字幕文件，但当前没有可用的 subtitle_file。")
-            args = args.replace("{{subtitle_file}}", shlex.quote(subtitle_file))
+            args = args.replace("{{subtitle_file}}", subtitle_file)
+        command_args = ["ffmpeg", "-y", "-i", input_video]
         if args:
-            return f"ffmpeg -y -i {shlex.quote(input_video)} {args} {shlex.quote(output_video)}"
-        return f"ffmpeg -y -i {shlex.quote(input_video)} {shlex.quote(output_video)}"
+            try:
+                command_args.extend(shlex.split(args))
+            except ValueError as exc:
+                raise RuntimeError(f"ffmpeg 命令模板无法解析，请检查引号或参数格式：{exc}") from exc
+        command_args.append(output_video)
+        return command_args
 
-    async def _run_bash_command(self, command: str) -> None:
+    async def _run_ffmpeg_command(self, command_args: List[str]) -> None:
         process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-lc",
-            command,
+            *command_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -1627,6 +2407,33 @@ class CaptionConversationAssistant:
                 "ffmpeg 执行失败："
                 + (stderr.decode("utf-8", errors="ignore") or stdout.decode("utf-8", errors="ignore"))[-3000:]
             )
+
+    def _video_has_audio_stream(self, video_path: str) -> bool:
+        if shutil.which("ffprobe") is None:
+            return False
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    video_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0 and "audio" in (result.stdout or "")
+        except Exception:
+            return False
 
     def get_exported_video_path(self, session_id: str) -> str:
         session = self.store.get(session_id)
@@ -1790,6 +2597,80 @@ class CaptionConversationAssistant:
         ]
         return any(keyword in normalized for keyword in export_keywords)
 
+    def _should_ask_user_goal(self, session: CaptionSession, user_prompt: str) -> bool:
+        if len(session.turns) != 1:
+            return False
+        normalized = user_prompt.strip().lower()
+        if not normalized:
+            return True
+        ambiguous_prompts = {
+            "看看这个视频",
+            "看一下这个视频",
+            "分析一下",
+            "帮我处理",
+            "帮我看看",
+            "先看看",
+            "先分析一下",
+            "上传好了",
+            "uploaded",
+        }
+        return normalized in ambiguous_prompts
+
+    def _build_goal_clarification_reply(self) -> str:
+        return (
+            "当前已收到视频素材，但还没有明确任务。\n\n"
+            "你可以直接告诉我你想做什么，我目前支持：\n"
+            "1. 生成或修改字幕草稿\n"
+            "2. 生成或修改剪辑方案\n"
+            "3. 生成英文标题和标签\n"
+            "4. 基于方案剪出一版 15s / 20s / 30s 左右的短视频\n"
+            "5. 导出带字幕或不带字幕的成片\n"
+            "6. 重新分析关键帧，刷新对素材的理解\n\n"
+            "例如你可以直接说：\n"
+            "- 先生成字幕\n"
+            "- 给我一版适合 TikTok 的剪辑方案\n"
+            "- 根据上述方案剪一个 30s 左右的短视频并导出"
+        )
+
+    def _enforce_prerequisites(
+        self,
+        session: CaptionSession,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+        targets: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        merged = dict(targets)
+        needs_video_context = any(
+            [
+                merged.get("update_subtitles"),
+                merged.get("update_editing_plan"),
+                merged.get("update_edited_video"),
+            ]
+        )
+        if needs_video_context and not working_state.video_summary:
+            merged["run_keyframe_analysis"] = True
+        if merged.get("update_edited_video"):
+            merged["update_editing_plan"] = True
+            if not working_state.subtitle_draft and self._should_burn_subtitles_from_prompt(user_prompt, session.platform):
+                merged["update_subtitles"] = True
+        return merged
+
+    def _should_burn_subtitles_from_prompt(self, user_prompt: str, platform: str) -> bool:
+        normalized = user_prompt.lower()
+        if any(keyword in normalized for keyword in ["不要字幕", "不带字幕", "without subtitles", "no subtitles"]):
+            return False
+        if any(keyword in normalized for keyword in ["字幕", "烧录", "caption", "subtitle"]):
+            return True
+        return platform.lower() in {"tiktok", "douyin", "reels"}
+
+    def _needs_dense_keyframe_refresh(self, user_prompt: str, decision: ExecutableEditDecision) -> bool:
+        if len(decision.segments) > 1:
+            return False
+        normalized = user_prompt.lower()
+        return self._should_export_from_prompt(normalized) or any(
+            keyword in normalized for keyword in ["30s", "30秒", "20s", "20秒", "短视频", "剪辑"]
+        )
+
     def _create_turn_task_board(
         self,
         plan_payload: Dict[str, Any],
@@ -1812,9 +2693,8 @@ class CaptionConversationAssistant:
         if export_intent:
             tasks.extend(
                 [
-                    TaskBoardItem(id="read_ffmpeg_skill", title="读取 ffmpeg skill"),
-                    TaskBoardItem(id="draft_ffmpeg_command", title="起草或修正 ffmpeg 命令"),
-                    TaskBoardItem(id="run_ffmpeg", title="执行 ffmpeg 导出"),
+                    TaskBoardItem(id="derive_clip_segments", title="建立原视频片段映射"),
+                    TaskBoardItem(id="run_video_edit_subagent", title="调用剪辑导出子代理"),
                     TaskBoardItem(id="verify_export", title="确认成片可下载"),
                 ]
             )
@@ -1840,7 +2720,7 @@ class CaptionConversationAssistant:
         merged["update_title"] = merged.get("update_title") or ("english_title" in task_ids)
         merged["update_tags"] = merged.get("update_tags") or ("tags" in task_ids)
         merged["update_edited_video"] = merged.get("update_edited_video") or any(
-            task_id in task_ids for task_id in {"read_ffmpeg_skill", "draft_ffmpeg_command", "run_ffmpeg", "verify_export"}
+            task_id in task_ids for task_id in {"derive_clip_segments", "run_video_edit_subagent", "verify_export"}
         )
         return merged
 
@@ -1902,7 +2782,7 @@ class CaptionConversationAssistant:
 
     def _describe_export_requirement(self, targets: Dict[str, Any]) -> str:
         if targets.get("update_edited_video"):
-            return "若要导出视频，必须先形成明确方案，再读取 ffmpeg skill，并生成可执行命令后导出。"
+            return "若要导出视频，必须先形成明确方案，再建立原视频片段映射，然后生成 concat 命令后导出。"
         return "本轮不要求导出视频。"
 
     def _build_recent_turn_memory(
@@ -1942,25 +2822,113 @@ class CaptionConversationAssistant:
             f"\n是否更新英文标题：{targets['update_title']}"
             f"\n是否更新标签：{targets['update_tags']}"
             f"\n是否导出视频：{targets['update_edited_video']}"
-            "\n可用技能文档：skills/ffmpeg-usage/SKILL.md，可通过 read_skill_ffmpeg_usage 读取。"
-            "\n当用户需求涉及 ffmpeg 命令、裁剪、拼接、压缩、比例调整、字幕烧录、导出规范时，应优先读取该技能。"
             "\n服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径，这两个路径是当前轮次的权威事实，不允许向用户再次索要。"
             f"\n当前输入视频路径：{session.video_path}"
             f"\n当前输出目录：{os.path.join(settings.export_dir, session.session_id)}"
-            "\n导出视频时，推荐先调用 draft_ffmpeg_command 生成或修正参数，再调用 run_bash_ffmpeg 执行。"
-            "\nrun_bash_ffmpeg 推荐输入 JSON："
-            '\n{"command_template":"-vf ... -c:v libx264 -c:a aac","output_extension":"mp4","summary":"导出 9:16 成片","needs_subtitle_file":false}'
-            "\n如果 run_bash_ffmpeg 返回错误观察结果，必须先调用 draft_ffmpeg_command 基于错误修正参数，再继续执行。"
+            "\n导出视频时，主 agent 不直接负责 ffmpeg 细节；应先调用 derive_clip_segments，再调用 run_video_edit_subagent 交给专门的剪辑导出子代理执行。"
             f"\n当前任务板：{self._serialize_task_board(self._get_turn(session, session.active_turn_id).task_board)}"
             f"\n最近轮次摘要：\n{self._build_recent_turn_memory(session, session.active_turn_id)}"
             f"\n视频摘要：{working_state.video_summary or '无'}"
             f"\n关键帧分析条数：{len(working_state.frame_analyses)}"
             f"\n当前字幕草稿：{working_state.subtitle_draft[:1200] if working_state.subtitle_draft else '无'}"
             f"\n当前剪辑方案：{working_state.editing_plan[:1200] if working_state.editing_plan else '无'}"
+            f"\n当前片段映射：\n{self._summarize_clip_segments(working_state.executable_edit.segments) or '无'}"
             f"\n当前英文标题：{working_state.english_title or '无'}"
             f"\n当前标签：{json.dumps(working_state.tags, ensure_ascii=False)}"
             f"\n当前导出视频：{working_state.edited_video.download_url or '无'}"
+            f"\n当前片段映射：\n{self._summarize_clip_segments(working_state.executable_edit.segments) or '无'}"
         )
+
+    def _build_video_edit_task_brief(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+        user_prompt: str,
+    ) -> str:
+        del turn
+        return (
+            "你是专门负责 ffmpeg 剪辑导出的 ReAct 子代理。"
+            "\n目标：基于已有片段映射，把原视频逐段裁切、缩放、必要时调速，先生成单段片段，再合并成最终成片。"
+            "\n执行要求："
+            "\n1. 先调用 read_video_edit_context，确认输入视频路径、输出目录、片段映射、字幕状态、上一条失败命令和错误。"
+            "\n2. 片段必须逐个处理：优先调用 render_clip_segment，一次只处理一个 segment。"
+            "\n3. 如果片段很多，要主动判断是否需要提高某些片段的 speed 来满足目标时长；不要盲目把所有片段都原速保留。"
+            "\n4. 如果发现当前片段映射明显不够支撑目标时长，或 segment 语义混乱，应回到主 agent 重新做更密的关键帧分析和片段映射，而不是强行 finalize。"
+            "\n5. 只有当所有片段都渲染完成后，才能调用 merge_rendered_segments 合并并在需要时烧录字幕。"
+            "\n6. 如果 render_clip_segment 或 merge_rendered_segments 返回错误，必须基于错误内容修改输入参数后再次调用对应工具，不能重复提交相同参数，也不能直接 finalize。"
+            f"\n用户目标：{user_prompt.strip() or '执行视频导出'}"
+            f"\n平台：{session.platform}"
+            f"\n字幕是否可用：{bool(working_state.subtitle_draft.strip())}"
+        )
+
+    def _build_video_edit_context_prompt(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+    ) -> str:
+        return (
+            f"输入视频路径：{session.video_path}"
+            f"\n输出目录：{os.path.join(settings.export_dir, session.session_id)}"
+            f"\n当前任务板：{self._serialize_task_board(turn.task_board)}"
+            f"\n片段映射摘要：\n{self._summarize_clip_segments(working_state.executable_edit.segments) or '无'}"
+            f"\n片段渲染状态：\n{self._summarize_rendered_segments(working_state.executable_edit) or '无'}"
+            f"\n字幕草稿预览：{working_state.subtitle_draft[:1200] if working_state.subtitle_draft else '无'}"
+            f"\n字幕开关：{working_state.executable_edit.burn_subtitles}"
+            f"\n目标比例：{working_state.executable_edit.aspect_ratio}"
+            f"\n上一次失败命令：{working_state.edited_video.command or '无'}"
+            f"\n上一次错误：{working_state.edited_video.error_message or '无'}"
+            f"\n片段合并错误：{working_state.executable_edit.merge_error_message or '无'}"
+        )
+
+    def _build_video_edit_completion_guard(self, working_state: GlobalEditingState):
+        def guard(_scratchpad: List[Dict[str, str]]) -> bool:
+            return bool(working_state.edited_video.download_url)
+
+        return guard
+
+    def _build_video_edit_fallback_step(
+        self,
+        session: CaptionSession,
+        turn: AgentTurn,
+        working_state: GlobalEditingState,
+    ):
+        def fallback(scratchpad: List[Dict[str, str]]) -> ReActStep:
+            action_names = [item.get("action") for item in scratchpad]
+            if "read_video_edit_context" not in action_names:
+                return ReActStep("需要先读取当前导出上下文，再决定 ffmpeg 参数。", "read_video_edit_context", "")
+            next_segment = self._next_pending_segment(working_state.executable_edit)
+            if next_segment is not None:
+                return ReActStep(
+                    f"还有未完成片段 {next_segment.id}，需要先逐段渲染。",
+                    "render_clip_segment",
+                    json.dumps({"segment_id": next_segment.id}, ensure_ascii=False),
+                )
+            if self._all_segments_rendered(working_state.executable_edit) and not working_state.edited_video.download_url:
+                return ReActStep(
+                    "所有片段都已渲染完成，下一步应合并片段并在需要时烧录字幕。",
+                    "merge_rendered_segments",
+                    json.dumps({"burn_subtitles": working_state.executable_edit.burn_subtitles}, ensure_ascii=False),
+                )
+            if working_state.edited_video.error_message or working_state.executable_edit.merge_error_message:
+                return ReActStep("上一次导出失败，需要重新读取上下文并修正参数。", "read_video_edit_context", "")
+            return ReActStep("已经具备导出结果。", "finalize", "")
+
+        return fallback
+
+    def _build_video_edit_step_skipper(self):
+        def should_skip(step: ReActStep, scratchpad: List[Dict[str, str]]) -> bool:
+            if step.action not in {"render_clip_segment", "merge_rendered_segments"}:
+                return False
+            normalized_input = step.action_input.strip()
+            return any(
+                item.get("action") == step.action
+                and str(item.get("action_input", "")).strip() == normalized_input
+                for item in scratchpad
+            )
+
+        return should_skip
 
     def _build_completion_guard(self, turn: AgentTurn, targets: Dict[str, Any], working_state: GlobalEditingState):
         def guard(scratchpad: List[Dict[str, str]]) -> bool:
@@ -1976,8 +2944,7 @@ class CaptionConversationAssistant:
     def _build_fallback_step(self, turn: AgentTurn, targets: Dict[str, Any]):
         def fallback(scratchpad: List[Dict[str, str]]) -> ReActStep:
             action_names = {item.get("action") for item in scratchpad}
-            has_draft = "draft_ffmpeg_command" in action_names
-            has_ffmpeg_run = "run_bash_ffmpeg" in action_names
+            has_export_subagent_run = "run_video_edit_subagent" in action_names
             if not turn.task_board.tasks and "create_task_board" not in action_names:
                 return ReActStep("需要先创建本轮任务板，明确子任务与当前焦点。", "create_task_board", "")
             if turn.task_board.tasks and "read_task_board" not in action_names:
@@ -1992,14 +2959,12 @@ class CaptionConversationAssistant:
                 return ReActStep("还需要产出英文标题。", "write_title", "")
             if targets["update_tags"] and "write_tags" not in action_names:
                 return ReActStep("还需要产出标签。", "write_tags", "")
-            if targets["update_edited_video"] and "read_skill_ffmpeg_usage" not in action_names:
-                return ReActStep("导出前需要先读取 ffmpeg skill，避免生成错误命令。", "read_skill_ffmpeg_usage", "")
-            if targets["update_edited_video"] and not has_draft:
-                return ReActStep("还需要先生成一版贴合当前目标的 ffmpeg 命令参数。", "draft_ffmpeg_command", "")
-            if targets["update_edited_video"] and has_draft and not has_ffmpeg_run:
-                return ReActStep("还需要基于当前方案执行 ffmpeg 导出成片。", "run_bash_ffmpeg", "")
-            if turn.task_board.blocked_reason and has_ffmpeg_run:
-                return ReActStep("上一次 ffmpeg 执行失败，需要根据错误修正命令后重试。", "draft_ffmpeg_command", "")
+            if targets["update_edited_video"] and "derive_clip_segments" not in action_names:
+                return ReActStep("还需要先把成片方案映射为原视频片段时间线。", "derive_clip_segments", "")
+            if targets["update_edited_video"] and not has_export_subagent_run:
+                return ReActStep("还需要把剪辑导出交给专门的子代理执行。", "run_video_edit_subagent", "")
+            if turn.task_board.blocked_reason and has_export_subagent_run:
+                return ReActStep("导出子代理上一次执行失败，需要再次委托它基于错误重试。", "run_video_edit_subagent", "")
             return ReActStep("本轮结果已经齐备。", "finalize", "")
 
         return fallback
@@ -2009,7 +2974,7 @@ class CaptionConversationAssistant:
             "create_task_board",
             "read_task_board",
             "run_keyframe_vision_subagent",
-            "read_skill_ffmpeg_usage",
+            "derive_clip_segments",
             "write_subtitles",
             "write_edit_plan",
             "write_title",
@@ -2017,11 +2982,6 @@ class CaptionConversationAssistant:
         }
 
         def should_skip(step: ReActStep, scratchpad: List[Dict[str, str]]) -> bool:
-            if step.action == "draft_ffmpeg_command":
-                has_prior_draft = any(item.get("action") == "draft_ffmpeg_command" for item in scratchpad)
-                has_ffmpeg_run = any(item.get("action") == "run_bash_ffmpeg" for item in scratchpad)
-                if has_prior_draft and not has_ffmpeg_run:
-                    return True
             if step.action not in single_run_actions:
                 return False
             return any(item.get("action") == step.action for item in scratchpad)
@@ -2053,9 +3013,10 @@ class CaptionConversationAssistant:
         for key, flag, detail in [
             ("subtitle_draft", targets.get("update_subtitles"), "正在生成或更新字幕草稿。"),
             ("editing_plan", targets.get("update_editing_plan"), "正在生成或更新剪辑方案。"),
+            ("clip_segments", targets.get("update_edited_video"), "正在建立原视频片段映射。"),
             ("english_title", targets.get("update_title"), "正在生成或更新英文标题。"),
             ("tags", targets.get("update_tags"), "正在生成或更新标签。"),
-            ("edited_video", targets.get("update_edited_video"), "正在执行 ffmpeg 导出视频。"),
+            ("edited_video", targets.get("update_edited_video"), "正在由剪辑导出子代理执行视频导出。"),
         ]:
             if flag:
                 self._update_workflow_artifact(
@@ -2178,6 +3139,8 @@ class CaptionConversationAssistant:
             sections.append(f"字幕草稿：\n{working_state.subtitle_draft.strip()}")
         if targets.get("update_editing_plan") and working_state.editing_plan:
             sections.append(f"剪辑方案：\n{working_state.editing_plan.strip()}")
+        if targets.get("update_edited_video") and working_state.executable_edit.segments:
+            sections.append("片段映射：\n" + self._summarize_clip_segments(working_state.executable_edit.segments))
         if targets.get("update_title") and working_state.english_title:
             sections.append(f"英文标题：\n{working_state.english_title.strip()}")
         if targets.get("update_tags") and working_state.tags:
@@ -2217,13 +3180,23 @@ class CaptionConversationAssistant:
             updated_items.append("字幕草稿")
         if "write_edit_plan" in action_names:
             updated_items.append("剪辑方案")
+        if "derive_clip_segments" in action_names:
+            updated_items.append("片段映射")
         if "write_title" in action_names:
             updated_items.append("英文标题")
         if "write_tags" in action_names:
             updated_items.append("标签")
-        if working_state.edited_video.download_url and "run_bash_ffmpeg" in action_names:
+        if working_state.edited_video.download_url and (
+            "run_video_edit_subagent" in action_names
+            or "render_clip_segment" in action_names
+            or "merge_rendered_segments" in action_names
+        ):
             updated_items.append("导出视频")
-        elif working_state.edited_video.error_message and "run_bash_ffmpeg" in action_names:
+        elif working_state.edited_video.error_message and (
+            "run_video_edit_subagent" in action_names
+            or "render_clip_segment" in action_names
+            or "merge_rendered_segments" in action_names
+        ):
             updated_items.append("导出视频失败")
 
         return (
