@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 import re
 import shlex
 import shutil
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,8 @@ from app.ai.factory import AIAdapterFactory
 from app.ai.types import AICompletionRequest, AIImageInput, AIMessage
 from app.core.config import settings
 from app.core.utils import extract_keyframes, select_keyframes_for_analysis
+
+logger = logging.getLogger(__name__)
 
 CAPTION_ASSISTANT_SYSTEM_PROMPT = """你是一个短视频创意与剪辑执行助手。
 你的职责是围绕单个视频会话，生成可执行、可复用、可继续迭代的结果。
@@ -306,7 +310,7 @@ class CaptionToolContext:
     targets: Dict[str, Any]
 
 
-class CaptionAssistantTool:
+class CaptionAssistantTool(ABC):
     name: str = ""
     description: str = ""
 
@@ -314,19 +318,37 @@ class CaptionAssistantTool:
         self.context = context
 
     async def run(self, action_input: str) -> str:
+        normalized_input = action_input.strip() or "{}"
+        logger.info(
+            "caption_tool_call tool=%s session_id=%s turn_id=%s user_prompt=%r arguments=%r",
+            self.name,
+            self.context.session.session_id,
+            self.context.turn.turn_id,
+            self.context.user_prompt[:200],
+            normalized_input[:4000],
+        )
         await self.context.assistant._append_turn_event(
             self.context.session,
             self.context.turn,
             TurnEventItem(
                 type="tool_call",
                 tool_name=self.name,
-                arguments=action_input.strip() or "{}",
+                arguments=normalized_input,
             ),
         )
-        return await self.execute(action_input)
+        result = await self.execute(action_input)
+        logger.info(
+            "caption_tool_result tool=%s session_id=%s turn_id=%s result=%r",
+            self.name,
+            self.context.session.session_id,
+            self.context.turn.turn_id,
+            result[:4000],
+        )
+        return result
 
+    @abstractmethod
     async def execute(self, action_input: str) -> str:
-        raise NotImplementedError
+        """Execute the concrete tool action."""
 
     def to_spec(self) -> ToolSpec:
         return ToolSpec(name=self.name, description=self.description, run=self.run)
@@ -1954,6 +1976,8 @@ class CaptionConversationAssistant:
     def _build_fallback_step(self, turn: AgentTurn, targets: Dict[str, Any]):
         def fallback(scratchpad: List[Dict[str, str]]) -> ReActStep:
             action_names = {item.get("action") for item in scratchpad}
+            has_draft = "draft_ffmpeg_command" in action_names
+            has_ffmpeg_run = "run_bash_ffmpeg" in action_names
             if not turn.task_board.tasks and "create_task_board" not in action_names:
                 return ReActStep("需要先创建本轮任务板，明确子任务与当前焦点。", "create_task_board", "")
             if turn.task_board.tasks and "read_task_board" not in action_names:
@@ -1970,11 +1994,11 @@ class CaptionConversationAssistant:
                 return ReActStep("还需要产出标签。", "write_tags", "")
             if targets["update_edited_video"] and "read_skill_ffmpeg_usage" not in action_names:
                 return ReActStep("导出前需要先读取 ffmpeg skill，避免生成错误命令。", "read_skill_ffmpeg_usage", "")
-            if targets["update_edited_video"] and "draft_ffmpeg_command" not in action_names:
+            if targets["update_edited_video"] and not has_draft:
                 return ReActStep("还需要先生成一版贴合当前目标的 ffmpeg 命令参数。", "draft_ffmpeg_command", "")
-            if targets["update_edited_video"] and "run_bash_ffmpeg" not in action_names:
+            if targets["update_edited_video"] and has_draft and not has_ffmpeg_run:
                 return ReActStep("还需要基于当前方案执行 ffmpeg 导出成片。", "run_bash_ffmpeg", "")
-            if turn.task_board.blocked_reason and "draft_ffmpeg_command" in action_names:
+            if turn.task_board.blocked_reason and has_ffmpeg_run:
                 return ReActStep("上一次 ffmpeg 执行失败，需要根据错误修正命令后重试。", "draft_ffmpeg_command", "")
             return ReActStep("本轮结果已经齐备。", "finalize", "")
 
@@ -1993,6 +2017,11 @@ class CaptionConversationAssistant:
         }
 
         def should_skip(step: ReActStep, scratchpad: List[Dict[str, str]]) -> bool:
+            if step.action == "draft_ffmpeg_command":
+                has_prior_draft = any(item.get("action") == "draft_ffmpeg_command" for item in scratchpad)
+                has_ffmpeg_run = any(item.get("action") == "run_bash_ffmpeg" for item in scratchpad)
+                if has_prior_draft and not has_ffmpeg_run:
+                    return True
             if step.action not in single_run_actions:
                 return False
             return any(item.get("action") == step.action for item in scratchpad)

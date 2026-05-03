@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     keyframe_interval_seconds: int = 3
     max_keyframes: int = 8
     keyframe_scene_threshold: float = 30.0
-    agent_max_steps: int = 6
+    agent_max_steps: int = 12
     
     # Server Config
     host: str = "0.0.0.0"
