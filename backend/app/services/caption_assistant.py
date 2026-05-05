@@ -145,11 +145,12 @@ DERIVE_CLIP_SEGMENTS_PROMPT = """任务：把创意剪辑方案翻译成可执�
 3. 大刀阔斧地砍：不要试图把原视频的每一秒都塞进成片。只挑最抓眼球的画面（Hook）、最核心的产品展示和最爽的结果。
 4. editing_plan 里的时间是成片时间线，不是原视频时间线。你必须输出原视频中的 source_start/source_end。
 5. 如果片段数量偏多、总时长可能超标，立刻删减冗余片段或进一步提速。
+6. 不要在片段映射中输出 subtitle_text，字幕的唯一来源是全局字幕草稿。
 
 输出要求：
 1. 只输出 JSON。
 2. 格式必须是：
-{"summary":"...","total_duration_seconds":15,"aspect_ratio":"9:16","burn_subtitles":true,"segments":[{"id":"seg_1","source_start":"00:00:12","source_end":"00:00:18","timeline_start":"00:00:00","timeline_end":"00:00:03","output_duration_seconds":3,"purpose":"开场 hook","visual_instruction":"特写污渍区域","speed":2.0,"transition_to_next":"hard_cut","subtitle_text":"..."}]}
+{"summary":"...","total_duration_seconds":15,"aspect_ratio":"9:16","burn_subtitles":true,"segments":[{"id":"seg_1","source_start":"00:00:12","source_end":"00:00:18","timeline_start":"00:00:00","timeline_end":"00:00:03","output_duration_seconds":3,"purpose":"开场 hook","visual_instruction":"特写污渍区域","speed":2.0,"transition_to_next":"hard_cut"}]}
 3. source_start/source_end 必须是原视频相对时间。
 4. speed 默认 1.0，遇到冗长过程请务必填入 >1.0 的加速倍数。
 """
@@ -225,7 +226,6 @@ class ClipSegment:
     visual_instruction: str = ""
     speed: float = 1.0
     transition_to_next: str = "hard_cut"
-    subtitle_text: str = ""
 
 
 @dataclass
@@ -565,7 +565,11 @@ class UpdateTaskStatusTool(CaptionAssistantTool):
 
 class WriteSubtitlesTool(CaptionAssistantTool):
     name = "write_subtitles"
-    description = "生成或更新字幕草稿。"
+    description = (
+        "生成或更新字幕草稿。"
+        "必须传入 JSON: {\"action\": \"rewrite\" | \"append\" | \"modify_partial\", \"guidance\": \"你的要求，如'翻译为英文'\", \"content\": \"\"}"
+        "\n【严重警告】若是重写(rewrite)或大改，强烈建议只传 guidance！让底层的专属模型去生成带时间轴的标准格式！绝对不要自己把全文写在 content 里，否则会导致时间轴丢失！"
+    )
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_subtitles(
@@ -579,7 +583,11 @@ class WriteSubtitlesTool(CaptionAssistantTool):
 
 class WriteEditPlanTool(CaptionAssistantTool):
     name = "write_edit_plan"
-    description = "生成或更新剪辑方案。"
+    description = (
+        "生成或更新剪辑方案。"
+        "必须传入 JSON: {\"action\": \"rewrite\" | \"append\" | \"modify_partial\", \"guidance\": \"你的要求，如'改成更强的 TikTok hook'\", \"content\": \"\"}"
+        "\n【严重警告】若是重写(rewrite)或大改，强烈建议只传 guidance！让底层的专属模型去生成结构完整的标准方案！绝对不要自己把全文写在 content 里，否则会导致结构退化！"
+    )
 
     async def execute(self, action_input: str) -> str:
         return await self.context.assistant._tool_write_edit_plan(
@@ -1333,7 +1341,7 @@ class CaptionConversationAssistant:
             rendered.file_name = output_name
             rendered.storage_path = output_path
             rendered.error_message = ""
-            rendered.summary = target_segment.purpose or target_segment.visual_instruction or target_segment.subtitle_text
+            rendered.summary = target_segment.purpose or target_segment.visual_instruction
             rendered.size_bytes = os.path.getsize(output_path)
             rendered.updated_at = _utcnow()
             decision.updated_at = rendered.updated_at
@@ -1422,6 +1430,11 @@ class CaptionConversationAssistant:
             subtitle_path = ""
             if burn_subtitles and working_state.subtitle_draft.strip():
                 subtitle_path = self._write_subtitle_sidecar(turn.turn_id, working_state.subtitle_draft)
+                if not subtitle_path:
+                    raise RuntimeError(
+                        "字幕解析失败：字幕草稿中未找到符合 `00:00-00:03 字幕内容` 格式的时间轴！"
+                        "请重新调用 write_subtitles，仅传入 guidance 让底层模型重新生成规范格式。"
+                    )
             if subtitle_path:
                 escaped_subtitle = self._escape_subtitle_filter_path(subtitle_path)
                 subtitle_args = [
@@ -1454,7 +1467,7 @@ class CaptionConversationAssistant:
 
             working_state.edited_video = EditedVideoArtifact(
                 file_name=os.path.basename(final_path),
-                download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video",
+                download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video?v={turn.turn_id}",
                 storage_path=final_path,
                 command=final_command,
                 summary=decision.summary or turn.user_prompt.strip(),
@@ -1596,10 +1609,42 @@ class CaptionConversationAssistant:
         action_input: str,
     ) -> str:
         self._set_task_status(turn, "subtitle_draft", "doing", notes="正在生成字幕草稿。")
-        working_state.subtitle_draft = await self._generate_subtitle_draft(
-            session,
+        payload = self._parse_json_object(action_input)
+        if isinstance(payload, dict) and "action" in payload:
+            action = str(payload.get("action", "rewrite")).strip() or "rewrite"
+            content = str(payload.get("content", "")).strip()
+            guidance = str(payload.get("guidance", "")).strip()
+            if action == "append":
+                base = working_state.subtitle_draft.rstrip()
+                working_state.subtitle_draft = f"{base}\n{content}".strip() if base else content
+            elif action == "modify_partial":
+                working_state.subtitle_draft = await self._generate_subtitle_draft(
+                    session,
+                    working_state,
+                    guidance or content or user_prompt,
+                )
+            else:
+                if guidance:
+                    working_state.subtitle_draft = await self._generate_subtitle_draft(
+                        session,
+                        working_state,
+                        guidance,
+                    )
+                else:
+                    working_state.subtitle_draft = content or await self._generate_subtitle_draft(
+                        session,
+                        working_state,
+                        user_prompt,
+                    )
+        else:
+            working_state.subtitle_draft = await self._generate_subtitle_draft(
+                session,
+                working_state,
+                action_input or user_prompt,
+            )
+        self._invalidate_edited_video_due_to_upstream_change(
             working_state,
-            action_input or user_prompt,
+            detail="前置文案已更新，等待重新导出成片",
         )
         self._complete_workflow_artifact(working_state, "subtitle_draft", "字幕草稿已更新。")
         self._set_task_status(turn, "subtitle_draft", "done", notes="字幕草稿已更新。")
@@ -1614,10 +1659,42 @@ class CaptionConversationAssistant:
         action_input: str,
     ) -> str:
         self._set_task_status(turn, "editing_plan", "doing", notes="正在生成剪辑方案。")
-        working_state.editing_plan = await self._generate_editing_plan(
-            session,
+        payload = self._parse_json_object(action_input)
+        if isinstance(payload, dict) and "action" in payload:
+            action = str(payload.get("action", "rewrite")).strip() or "rewrite"
+            content = str(payload.get("content", "")).strip()
+            guidance = str(payload.get("guidance", "")).strip()
+            if action == "append":
+                base = working_state.editing_plan.rstrip()
+                working_state.editing_plan = f"{base}\n{content}".strip() if base else content
+            elif action == "modify_partial":
+                working_state.editing_plan = await self._generate_editing_plan(
+                    session,
+                    working_state,
+                    guidance or content or user_prompt,
+                )
+            else:
+                if guidance:
+                    working_state.editing_plan = await self._generate_editing_plan(
+                        session,
+                        working_state,
+                        guidance,
+                    )
+                else:
+                    working_state.editing_plan = content or await self._generate_editing_plan(
+                        session,
+                        working_state,
+                        user_prompt,
+                    )
+        else:
+            working_state.editing_plan = await self._generate_editing_plan(
+                session,
+                working_state,
+                action_input or user_prompt,
+            )
+        self._invalidate_edited_video_due_to_upstream_change(
             working_state,
-            action_input or user_prompt,
+            detail="前置文案已更新，等待重新导出成片",
         )
         self._complete_workflow_artifact(working_state, "editing_plan", "剪辑执行方案已更新。")
         self._set_task_status(turn, "editing_plan", "done", notes="剪辑方案已更新。")
@@ -1702,7 +1779,7 @@ class CaptionConversationAssistant:
 
             working_state.edited_video = EditedVideoArtifact(
                 file_name=output_name,
-                download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video",
+                download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video?v={turn.turn_id}",
                 storage_path=output_path,
                 command=attempted_command,
                 summary=summary,
@@ -1934,7 +2011,6 @@ class CaptionConversationAssistant:
                     visual_instruction=str(item.get("visual_instruction", "")).strip(),
                     speed=speed,
                     transition_to_next=str(item.get("transition_to_next", "hard_cut")).strip() or "hard_cut",
-                    subtitle_text=str(item.get("subtitle_text", "")).strip(),
                 )
             )
 
@@ -2065,6 +2141,22 @@ class CaptionConversationAssistant:
             args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-shortest"])
         args.append(output_path)
         return args
+
+    def _invalidate_edited_video_due_to_upstream_change(
+        self,
+        working_state: GlobalEditingState,
+        *,
+        detail: str,
+    ) -> None:
+        working_state.edited_video = EditedVideoArtifact()
+        self._update_workflow_artifact(
+            working_state,
+            "edited_video",
+            status="idle",
+            detail=detail,
+            requested=True,
+            needs_refresh=True,
+        )
 
     def _build_filter_complex_for_segments(
         self,
@@ -2265,7 +2357,7 @@ class CaptionConversationAssistant:
 
         entries: List[str] = []
         pattern = re.compile(
-            r"^(?P<start>\d{1,2}:\d{2}(?::\d{2})?)\s*[-—–~]\s*(?P<end>\d{1,2}:\d{2}(?::\d{2})?)\s+(?P<text>.+)$"
+            r"^[\s\*\-\.]*(?P<start>\d{1,2}:\d{2}(?::\d{2})?)[\s\*]*[-—–~to]+[\s\*]*(?P<end>\d{1,2}:\d{2}(?::\d{2})?)[\s\*:]+(?P<text>.+)$"
         )
         for line in subtitle_draft.splitlines():
             match = pattern.match(line.strip())
