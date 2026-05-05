@@ -1,134 +1,175 @@
-# 电商出海助手
+# Oversea Agent
 
-一个专为电商出海设计的智能助手，提供视频字幕生成、多agent讨论系统和市场调研功能。
+An editing-state-driven conversational video editing agent.
 
-## 功能特点
+Oversea Agent is not a one-shot subtitle generator and not a generic chat wrapper around video tools. It is a session-based editing system where the agent advances a video project by moving explicit editing artifacts through a controlled workflow: video understanding, subtitle drafting, editing plan generation, clip derivation, and final export.
 
-### 1. 视频字幕生成
-- 提取视频关键帧
-- 利用多模态大模型分析关键帧内容
-- 结合产品说明书或自动搜索相关信息
-- 生成高质量字幕文件
+The core idea is simple: the conversation does not directly edit a file. It edits the **global editing state**, and the state drives the next editing step.
 
-### 2. 多Agent讨论系统
-- 产品宣传小组多成员讨论
-- 收集热点信息
-- 分析热点视频
-- 提出视频拍摄脚本和转场要求
+## What This Project Is
 
-### 3. Deep Research功能
-- 市场调研
-- 竞品分析
-- 出海策略建议
+Oversea Agent is built for short-form commerce and growth video production. A user uploads a video, provides product context and intent, then works with the agent through a continuous dialogue. Each round updates a persistent session instead of restarting from zero.
 
-## 技术栈
+The system keeps three layers aligned:
 
-### 后端
-- Python 3.9+
-- LangChain
-- LangGraph
-- LlamaIndex
-- FastAPI
-- OpenCV (视频处理)
+- `turns`: the conversational history and agent events for each request.
+- `global_editing_state`: the durable editing artifacts accumulated across the session.
+- `workflow`: the explicit status model that tells the agent what is ready, stale, blocked, or exportable.
 
-### 前端
-- React 18
-- Vite
-- TailwindCSS
-- shadcn/ui
+This makes the product closer to an editing runtime than a prompt box.
 
-## 项目结构
+## Editing State Model
 
+The session state is designed around composable editing artifacts, not raw model output.
+
+- `keyframe_analysis`: extracted keyframes and frame-level vision analysis.
+- `video_summary`: a compact understanding of the source footage.
+- `subtitle_draft`: the current working subtitle draft.
+- `editing_plan`: the current shot-level editing plan.
+- `clip_segments`: executable segment mappings from source timeline to output timeline.
+- `english_title`: title generation for publish-ready assets.
+- `tags`: tag generation for distribution.
+- `edited_video`: exported output and download metadata.
+
+Every artifact has workflow metadata such as `status`, `requested`, `needs_refresh`, and `updated_at`. This is what lets the agent reason about what should happen next instead of regenerating everything on every turn.
+
+## How The Agent Works
+
+The agent progresses through editing by reading and mutating the session state through tool calls.
+
+Typical flow:
+
+1. Create a session with video, platform, prompt, and optional product manual.
+2. Run video understanding on keyframes or per-second analysis.
+3. Draft subtitles and a shot-level editing plan.
+4. Derive executable clip segments from the plan.
+5. Run the export sub-agent to assemble and render with `ffmpeg`.
+6. Continue the same thread with follow-up prompts to refine any artifact.
+
+Because the session is stateful, a follow-up like "make the hook sharper" or "export a faster version for TikTok" updates the relevant artifact instead of rebuilding the entire project blindly.
+
+## Product Surface
+
+The current UI is a conversational caption and editing workspace:
+
+- upload a source video
+- choose a target platform
+- select an analysis mode
+- provide product or campaign context
+- iterate in a single conversation thread
+- inspect workflow progress through SSE-driven session updates
+- export the edited video from the same session
+
+## Architecture
+
+### Backend
+
+- `FastAPI` for session and streaming APIs
+- session-oriented runtime for conversational editing
+- multimodal analysis for keyframe understanding
+- tool-based agent orchestration for subtitles, editing plans, and export
+- `ffmpeg` / `ffprobe` execution for rendering and verification
+
+Key runtime areas:
+
+- [backend/app/api/endpoints/caption.py](/home/jhli/oversea-agent/backend/app/api/endpoints/caption.py)
+- [backend/app/models/caption.py](/home/jhli/oversea-agent/backend/app/models/caption.py)
+- [backend/app/services/caption_assistant_runtime/assistant.py](/home/jhli/oversea-agent/backend/app/services/caption_assistant_runtime/assistant.py)
+- [backend/app/services/caption_assistant_runtime/tools.py](/home/jhli/oversea-agent/backend/app/services/caption_assistant_runtime/tools.py)
+- [backend/app/services/caption_assistant_runtime/video_export.py](/home/jhli/oversea-agent/backend/app/services/caption_assistant_runtime/video_export.py)
+
+### Frontend
+
+- `React + Vite + TypeScript`
+- session-driven workspace UI
+- SSE subscription for live turn events and state snapshots
+- split panels for conversation, workspace state, and history
+
+Key UI areas:
+
+- [frontend/src/pages/CaptionGenerator.tsx](/home/jhli/oversea-agent/frontend/src/pages/CaptionGenerator.tsx)
+- [frontend/src/components/caption-studio/ConversationPanel.tsx](/home/jhli/oversea-agent/frontend/src/components/caption-studio/ConversationPanel.tsx)
+- [frontend/src/components/caption-studio/WorkspaceSidebar.tsx](/home/jhli/oversea-agent/frontend/src/components/caption-studio/WorkspaceSidebar.tsx)
+- [frontend/src/components/caption-studio/HistorySidebar.tsx](/home/jhli/oversea-agent/frontend/src/components/caption-studio/HistorySidebar.tsx)
+
+## API Shape
+
+Core session endpoints:
+
+- `POST /api/caption/assistant/session`
+- `GET /api/caption/assistant/session/{session_id}`
+- `GET /api/caption/assistant/session/{session_id}/events`
+- `POST /api/caption/assistant/session/{session_id}/message`
+- `GET /api/caption/assistant/session/{session_id}/exported-video`
+
+The event stream emits authoritative session snapshots and turn-level events so the frontend can render long-running editing work without polling as the primary transport.
+
+## Local Development
+
+### Requirements
+
+- Python `3.12+`
+- Node.js `18+`
+- `ffmpeg` and `ffprobe` available in `PATH`
+- model provider credentials for the configured adapters
+
+### Backend
+
+Install Python dependencies:
+
+```bash
+uv sync
 ```
-oversea-agent/
-├── backend/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── endpoints/
-│   │   │   └── router.py
-│   │   ├── core/
-│   │   │   ├── config.py
-│   │   │   └── utils.py
-│   │   ├── models/
-│   │   ├── providers/
-│   │   │   └── llm_providers.py
-│   │   ├── services/
-│   │   │   ├── caption_generator.py
-│   │   │   ├── multi_agent.py
-│   │   │   └── deep_research.py
-│   │   └── workflow/
-│   │       └── caption_workflow.py
-│   ├── main.py
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/
-│   ├── public/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── api/
-│   │   ├── hooks/
-│   │   ├── types/
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.ts
-└── README.md
-```
 
-## 快速开始
+Run the API:
 
-### 后端设置
-
-1. 进入后端目录
 ```bash
 cd backend
+uv run uvicorn main:app --reload
 ```
 
-2. 安装依赖
-```bash
-pip install -r requirements.txt
-```
+### Frontend
 
-3. 配置环境变量
-```bash
-cp .env.example .env
-# 编辑 .env 文件，添加必要的API密钥
-```
+Install frontend dependencies:
 
-4. 启动后端服务
-```bash
-uvicorn main:app --reload
-```
-
-### 前端设置
-
-1. 进入前端目录
 ```bash
 cd frontend
-```
-
-2. 安装依赖
-```bash
 npm install
 ```
 
-3. 启动前端开发服务器
+Run the frontend:
+
 ```bash
 npm run dev
 ```
 
-## API文档
+## Configuration
 
-启动后端服务后，可以访问 `http://localhost:8000/docs` 查看API文档。
+Runtime settings live in [backend/app/core/config.py](/home/jhli/oversea-agent/backend/app/core/config.py).
 
-## 注意事项
+Important configuration areas:
 
-- 确保配置了正确的API密钥（如OpenAI、Google等）
-- 视频处理可能需要较大的内存和处理能力
-- 某些功能可能需要较长的处理时间
+- model credentials such as `OPENAI_API_KEY`, `GLM_API_KEY`, `DEEPSEEK_API_KEY`
+- model routing such as `MULTIMODAL_PROVIDER`, `MULTIMODAL_MODEL`
+- media controls such as `KEYFRAME_INTERVAL_SECONDS`, `MAX_KEYFRAMES`
+- export controls such as `EXPORT_DIR`, `FFMPEG_EXECUTION_TIMEOUT_SECONDS`
 
-## 贡献
+The project reads environment variables from `.env`.
 
-欢迎提交Issue和Pull Request！
+## Why This Design
+
+Most AI video tools collapse planning, generation, and export into a single opaque step. This project does the opposite.
+
+It exposes the editing process as a state machine the agent can inspect and update. That makes the system better suited for:
+
+- iterative editing
+- partial regeneration
+- export retries
+- workflow observability
+- future multi-agent specialization around distinct editing stages
+
+## Status
+
+The current product center is the conversational caption and editing studio. The architecture already reflects an agent runtime with explicit editing state, live task progression, and export tooling, which makes it a strong base for broader editing automation.
+
+For Chinese documentation, see [README_zh.md](/home/jhli/oversea-agent/README_zh.md).
