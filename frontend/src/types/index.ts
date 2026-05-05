@@ -1,3 +1,5 @@
+export type AnalysisMode = 'keyframe' | 'every_second';
+
 export interface CaptionResponse {
   caption: string;
   editing_plan?: string;
@@ -81,6 +83,7 @@ export interface AgentTurn {
 export interface CaptionAssistantSession {
   session_id: string;
   platform: string;
+  analysis_mode: AnalysisMode;
   turns: AgentTurn[];
   global_editing_state: GlobalEditingState;
   status: 'idle' | 'processing' | 'completed' | 'error';

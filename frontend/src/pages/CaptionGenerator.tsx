@@ -10,7 +10,7 @@ import {
   getCaptionAssistantSession,
 } from '../api/api';
 import { SessionListItem, buildSessionHistoryItem, getWorkflowRows } from '../components/caption-studio/shared';
-import { CaptionAssistantSession, TurnEventItem } from '../types';
+import { AnalysisMode, CaptionAssistantSession, TurnEventItem } from '../types';
 
 const PLATFORM_OPTIONS = [
   { value: 'tiktok', label: 'TikTok', iconClassName: 'bg-slate-900' },
@@ -32,6 +32,7 @@ const CaptionGenerator: React.FC = () => {
   const [video, setVideo] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [platform, setPlatform] = useState<string>('tiktok');
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('keyframe');
   const [productManual, setProductManual] = useState<string>('');
   const [sellingPointsOpen, setSellingPointsOpen] = useState<boolean>(false);
   const [draftPrompt, setDraftPrompt] = useState<string>(
@@ -67,6 +68,7 @@ const CaptionGenerator: React.FC = () => {
   const applyAuthoritativeSession = useCallback((nextSession: CaptionAssistantSession) => {
     setPendingUserPrompt(null);
     sessionRef.current = nextSession;
+    setAnalysisMode(nextSession.analysis_mode);
     setSession((current) => {
       if (current && isStaleSessionVersion(nextSession.version, current.version)) {
         return current;
@@ -261,6 +263,7 @@ const CaptionGenerator: React.FC = () => {
     setVideo(null);
     setVideoPreviewUrl(null);
     setProductManual('');
+    setAnalysisMode('keyframe');
     setSellingPointsOpen(false);
     setDraftPrompt('请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。');
     setComposerMode('initial');
@@ -275,6 +278,7 @@ const CaptionGenerator: React.FC = () => {
     try {
       const nextSession = await getCaptionAssistantSession(sessionId);
       startTransition(() => {
+        setAnalysisMode(nextSession.analysis_mode);
         setSession(nextSession);
         setComposerMode('followup');
         setMobilePane('chat');
@@ -318,6 +322,7 @@ const CaptionGenerator: React.FC = () => {
           platform,
           normalizedPrompt,
           productManual || null,
+          analysisMode,
         );
 
         applyAuthoritativeSession(response);
@@ -403,6 +408,8 @@ const CaptionGenerator: React.FC = () => {
           draftPrompt={draftPrompt}
           setDraftPrompt={setDraftPrompt}
           submitPrompt={(value) => void submitPrompt(value)}
+          analysisMode={analysisMode}
+          setAnalysisMode={setAnalysisMode}
           platform={platform}
           platformOptions={PLATFORM_OPTIONS}
           setPlatform={setPlatform}

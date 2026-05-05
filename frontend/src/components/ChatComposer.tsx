@@ -171,7 +171,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             </button>
 
             {platformMenuOpen ? (
-              <div className="absolute left-0 top-12 z-20 min-w-[180px] rounded-2xl border border-white/10 bg-[#242424] p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.32)]">
+              <div className="absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded-2xl border border-white/10 bg-[#242424] p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.32)]">
                 {platformOptions.map((option) => (
                   <button
                     key={option.value}

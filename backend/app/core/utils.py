@@ -150,7 +150,8 @@ def extract_keyframes(
     video_path: str,
     interval: int = 5,
     max_frames: Optional[int] = None,
-    scene_threshold: float = 30.0,
+    scene_threshold: Optional[float] = 30.0,
+    deduplicate_similar_frames: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     从视频中提取关键帧。
@@ -167,7 +168,11 @@ def extract_keyframes(
 
     frame_candidates: List[Dict[str, Any]] = []
     iframe_timestamps = _extract_iframe_timestamps(video_path)
-    scene_timestamps = _extract_scene_timestamps(video_path, scene_threshold)
+    scene_timestamps = (
+        _extract_scene_timestamps(video_path, scene_threshold)
+        if scene_threshold is not None
+        else []
+    )
 
     for timestamp in iframe_timestamps:
         frame, frame_number = _extract_frame_at(cap, timestamp)
@@ -221,7 +226,7 @@ def extract_keyframes(
         merged = False
         for existing in deduplicated:
             same_moment = abs(existing["timestamp_seconds"] - timestamp) <= 0.2
-            same_frame = existing["hash"] == candidate["hash"]
+            same_frame = deduplicate_similar_frames and existing["hash"] == candidate["hash"]
             if same_moment or same_frame:
                 if candidate["source"] not in existing["source"].split("+"):
                     existing["source"] = f'{existing["source"]}+{candidate["source"]}'

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { CaptionAssistantSession } from '../types';
+import { AnalysisMode, CaptionAssistantSession } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -17,11 +17,13 @@ export const createCaptionAssistantSession = async (
   platform: string,
   prompt: string,
   productManual: string | null,
+  analysisMode: AnalysisMode,
 ): Promise<CaptionAssistantSession> => {
   const formData = new FormData();
   formData.append('video', video);
   formData.append('platform', platform);
   formData.append('prompt', prompt);
+  formData.append('analysis_mode', analysisMode);
   if (productManual) {
     formData.append('product_manual', productManual);
   }

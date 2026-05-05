@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Annotated
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -39,6 +40,7 @@ async def create_caption_session(
     platform: Annotated[str, Form(...)],
     prompt: Annotated[str, Form(...)],
     product_manual: Annotated[str | None, Form()] = None,
+    analysis_mode: Annotated[Literal["keyframe", "every_second"], Form()] = "keyframe",
 ):
     """
     创建字幕与剪辑助手会话，并异步开始处理。
@@ -49,6 +51,7 @@ async def create_caption_session(
         platform=platform,
         product_manual=product_manual,
         user_prompt=prompt,
+        analysis_mode=analysis_mode,
     )
 
 

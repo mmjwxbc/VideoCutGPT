@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from threading import Lock
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from app.agent.runtime import LightPlanningReActRuntime, ReActStep, ToolRegistry, ToolSpec
@@ -22,6 +22,8 @@ from app.core.config import settings
 from app.core.utils import extract_keyframes, select_keyframes_for_analysis
 
 logger = logging.getLogger(__name__)
+
+AnalysisMode = Literal["keyframe", "every_second"]
 
 CAPTION_ASSISTANT_SYSTEM_PROMPT = """你是一个具备深度视觉理解和自动化视频剪辑能力的创意执行专家。
 你拥有对视频素材、产品说明、字幕文案、剪辑方案的全局控制权。
@@ -37,7 +39,7 @@ CAPTION_ASSISTANT_SYSTEM_PROMPT = """你是一个具备深度视觉理解和自�
 
 你可以调用或协调的核心能力：
 - 关键帧视觉深度分析
-- 字幕文案创作与定向修改
+- 字幕文案创作与定向修改（支持多语言翻译与适配）
 - 剪辑结构设计，从 Hook 到 CTA
 - 自动片段选取与 FFmpeg 物理合成导出
 """
@@ -47,20 +49,21 @@ VIDEO_SUMMARY_SYSTEM_PROMPT = "请输出结构化、简洁、可供后续字幕�
 SUBTITLE_GENERATION_PROMPT = """任务：生成或修改短视频字幕草稿。
 
 角色：
-你是资深短视频字幕导演与广告文案编辑。
+你是资深短视频字幕导演与广告文案编辑，具备多语言文案创作能力。
 
 目标：
-基于视频理解、产品信息和本轮要求，产出一版可以直接进入人工审校的字幕草稿。
+基于视频理解、产品信息和本轮要求（如语言、风格、特定翻译需求），产出一版可以直接进入人工审校的字幕草稿。
 
 工作原则：
-1. 先理解视频结构，再按镜头节奏写字幕，不要堆叠卖点。
-2. 字幕要服务转化，优先突出痛点、解决方案、证据、利益点、行动引导。
-3. 若用户要求修改，必须在当前草稿上定向迭代，不要无故推翻已有有效内容。
-4. 若视频上下文不足，可结合说明书补足，但不要编造未出现的强事实。
+1. 语言对齐：严格遵循用户要求的语言（中文、英文、或中英双语）。
+2. 先理解视频结构，再按镜头节奏写字幕，不要堆叠卖点。
+3. 字幕要服务转化，优先突出痛点、解决方案、证据、利益点、行动引导。
+4. 若用户要求修改，必须在当前草稿上定向迭代，不要无故推翻已有有效内容。
+5. 若视频上下文不足，可结合说明书补足，但不要编造未出现的强事实。
 
 输出要求：
-1. 输出中文。
-2. 优先按时间轴分段，格式示例：00:00-00:03 字幕内容。
+1. 字幕语言应遵循用户指令（如：翻译成英文、中英双语）。若用户未明确指定，默认输出中文。
+2. 优先按时间轴分段，格式示例：00:00-00:03 Subtitle Content Here.
 3. 每段字幕尽量短促、易读、适合口播或画面停留时长。
 4. 语言风格贴合短视频平台，避免书面腔和冗长表达。
 5. 只输出最终字幕草稿正文，不要解释，不要 JSON。
@@ -127,7 +130,7 @@ ASSISTANT_REPLY_PROMPT = """任务：整理本轮最终回复。
 4. 如果只改了剪辑方案，就直接给出剪辑方案。
 5. 如果同时更新了多个产物，按“字幕草稿 / 剪辑方案 / 英文标题 / 标签 / 视频摘要洞察”分段输出。
 6. 如果只做了关键帧分析，没有产出字幕或剪辑方案，就给出视频摘要和关键帧洞察。
-7. 默认输出中文；英文标题与英文标签保持英文原文。
+7. 默认输出中文；字幕草稿语言应与生成结果保持一致（支持英文或中英双语）；英文标题与英文标签保持英文原文。
 8. 不要重复工具日志，不要说“我已经帮你”，不要虚构未完成内容。
 9. 如果本轮成功导出了视频，明确告知视频已可导出下载，并简要说明导出结果。
 10. 如果本轮导出视频失败，要明确说明失败原因，并提示用户当前还没有可下载成片。
@@ -320,6 +323,7 @@ class CaptionSession:
     video_path: str
     platform: str
     product_manual: str
+    analysis_mode: AnalysisMode = "keyframe"
     turns: List[AgentTurn] = field(default_factory=list)
     global_editing_state: GlobalEditingState = field(default_factory=GlobalEditingState)
     status: str = "idle"
@@ -766,6 +770,7 @@ class CaptionConversationAssistant:
         platform: str,
         product_manual: Optional[str],
         user_prompt: str,
+        analysis_mode: AnalysisMode = "keyframe",
     ) -> Dict[str, Any]:
         turn = AgentTurn(turn_id=str(uuid4()), user_prompt=user_prompt)
         session = CaptionSession(
@@ -773,6 +778,7 @@ class CaptionConversationAssistant:
             video_path=video_path,
             platform=platform,
             product_manual=product_manual or "",
+            analysis_mode=analysis_mode,
             turns=[turn],
             status="processing",
             active_turn_id=turn.turn_id,
@@ -1096,23 +1102,24 @@ class CaptionConversationAssistant:
         session: CaptionSession,
         working_state: GlobalEditingState,
     ) -> str:
-        self._set_task_status(turn, "keyframe_analysis", "doing", notes="正在执行关键帧分析。")
+        analysis_label = "逐秒分析" if session.analysis_mode == "every_second" else "关键帧分析"
+        self._set_task_status(turn, "keyframe_analysis", "doing", notes=f"正在执行{analysis_label}。")
         if (
             working_state.video_summary
             and working_state.frame_analyses
             and not working_state.workflow.keyframe_analysis.needs_refresh
         ):
-            self._set_task_status(turn, "keyframe_analysis", "done", notes="视频上下文已存在，跳过重复分析。")
-            return "视频上下文已存在，跳过重复分析。"
+            self._set_task_status(turn, "keyframe_analysis", "done", notes=f"视频上下文已存在，跳过重复{analysis_label}。")
+            return f"视频上下文已存在，跳过重复{analysis_label}。"
 
         working_state.keyframes = []
         working_state.frame_analyses = []
         working_state.video_summary = ""
         await self._prepare_video_context(session, working_state)
-        self._set_task_status(turn, "keyframe_analysis", "done", notes="关键帧分析与视频摘要已完成。")
+        self._set_task_status(turn, "keyframe_analysis", "done", notes=f"{analysis_label}与视频摘要已完成。")
         return (
-            "关键帧视觉分析已完成。"
-            f"\n关键帧数量：{len(working_state.keyframes)}"
+            f"{analysis_label}已完成。"
+            f"\n分析帧数量：{len(working_state.keyframes)}"
             f"\n分析结果数量：{len(working_state.frame_analyses)}"
             f"\n视频摘要：{working_state.video_summary or '无'}"
         )
@@ -1125,11 +1132,21 @@ class CaptionConversationAssistant:
         interval_seconds: int | None = None,
         max_frames: int | None = None,
     ) -> None:
+        is_every_second_mode = session.analysis_mode == "every_second"
+        effective_interval = interval_seconds if interval_seconds is not None else (
+            1 if is_every_second_mode else settings.keyframe_interval_seconds
+        )
+        effective_max_frames = max_frames if max_frames is not None else (
+            None if is_every_second_mode else settings.max_keyframes
+        )
+        effective_scene_threshold = None if is_every_second_mode else settings.keyframe_scene_threshold
+        analysis_label = "逐秒分析" if is_every_second_mode else "关键帧分析"
+
         self._update_workflow_artifact(
             working_state,
             "keyframe_analysis",
             status="in_progress",
-            detail="正在提取关键帧并进行分析。",
+            detail=f"正在提取{analysis_label}所需画面并进行分析。",
             requested=True,
             needs_refresh=False,
         )
@@ -1144,16 +1161,21 @@ class CaptionConversationAssistant:
         working_state.keyframes = await asyncio.to_thread(
             extract_keyframes,
             session.video_path,
-            interval_seconds or settings.keyframe_interval_seconds,
+            effective_interval,
             None,
-            settings.keyframe_scene_threshold,
+            effective_scene_threshold,
+            not is_every_second_mode,
         )
-        working_state.frame_analyses = await self._analyze_video_frames(working_state, max_frames=max_frames)
+        working_state.frame_analyses = await self._analyze_video_frames(
+            working_state,
+            max_frames=effective_max_frames,
+            analysis_mode=session.analysis_mode,
+        )
         working_state.video_summary = await self._summarize_video(session, working_state)
         self._complete_workflow_artifact(
             working_state,
             "keyframe_analysis",
-            f"已完成 {len(working_state.frame_analyses)} 条关键帧理解。",
+            f"已完成 {len(working_state.frame_analyses)} 条{analysis_label}理解。",
         )
         self._complete_workflow_artifact(
             working_state,
@@ -1161,20 +1183,39 @@ class CaptionConversationAssistant:
             "视频摘要已生成。",
         )
 
-    async def _analyze_video_frames(self, working_state: GlobalEditingState, *, max_frames: int | None = None) -> List[str]:
-        analysis_frames = select_keyframes_for_analysis(
-            working_state.keyframes,
-            max_frames=max_frames or settings.max_keyframes,
-        )
-        analyses: List[str] = []
-        for index, keyframe in enumerate(analysis_frames, start=1):
-            analysis = await self._analyze_single_frame(
-                index,
-                str(keyframe.get("image_base64", "")),
+    async def _analyze_video_frames(
+        self,
+        working_state: GlobalEditingState,
+        *,
+        max_frames: int | None = None,
+        analysis_mode: AnalysisMode = "keyframe",
+    ) -> List[str]:
+        if analysis_mode == "every_second":
+            analysis_frames = working_state.keyframes
+        else:
+            analysis_frames = select_keyframes_for_analysis(
+                working_state.keyframes,
+                max_frames=max_frames or settings.max_keyframes,
             )
+        tasks = []
+        for index, keyframe in enumerate(analysis_frames, start=1):
+            tasks.append(
+                self._analyze_single_frame(
+                    index,
+                    str(keyframe.get("image_base64", "")),
+                )
+            )
+
+        results = await asyncio.gather(*tasks)
+
+        analyses: List[str] = []
+        for i, analysis in enumerate(results):
+            keyframe = analysis_frames[i]
+            index = i + 1
             timestamp = keyframe.get("timestamp_seconds")
             source = keyframe.get("source", "unknown")
             analyses.append(f"关键帧{index}（{timestamp}s, 来源: {source}）: {analysis}")
+
         return analyses
 
     async def _analyze_single_frame(self, frame_index: int, frame_base64: str) -> str:
@@ -1376,6 +1417,11 @@ class CaptionConversationAssistant:
         self._ensure_rendered_segment_entries(decision)
         if not self._all_segments_rendered(decision):
             raise RuntimeError("仍有片段未完成渲染，不能执行最终合并。")
+
+        logger.info(
+            "merge_rendered_segments subtitle draft preview: %s",
+            (working_state.subtitle_draft or "")[:100],
+        )
 
         payload = self._parse_json_object(action_input)
         burn_subtitles = decision.burn_subtitles if not isinstance(payload, dict) else bool(payload.get("burn_subtitles", decision.burn_subtitles))
@@ -2360,12 +2406,13 @@ class CaptionConversationAssistant:
             r"^[\s\*\-\.]*(?P<start>\d{1,2}:\d{2}(?::\d{2})?)[\s\*]*[-—–~to]+[\s\*]*(?P<end>\d{1,2}:\d{2}(?::\d{2})?)[\s\*:]+(?P<text>.+)$"
         )
         for line in subtitle_draft.splitlines():
-            match = pattern.match(line.strip())
+            normalized_line = line.strip().strip("\"'“”‘’")
+            match = pattern.match(normalized_line)
             if not match:
                 continue
             start = self._to_srt_timestamp(match.group("start"))
             end = self._to_srt_timestamp(match.group("end"))
-            text = match.group("text").strip()
+            text = match.group("text").strip().strip("\"'“”‘’")
             if not text:
                 continue
             entries.append(f"{len(entries) + 1}\n{start} --> {end}\n{text}\n")
@@ -3086,6 +3133,7 @@ class CaptionConversationAssistant:
         return {
             "session_id": session.session_id,
             "platform": session.platform,
+            "analysis_mode": session.analysis_mode,
             "turns": [asdict(turn) for turn in session.turns],
             "global_editing_state": editing_state,
             "status": session.status,
