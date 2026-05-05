@@ -6,3 +6,6 @@ __pycache__
 tmp/
 uploads
 exports
+.venv
+.agents
+.vscode
