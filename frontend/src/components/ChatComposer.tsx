@@ -9,6 +9,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { AnalysisMode } from '../types';
 
 export interface ChatComposerOption {
   value: string;
@@ -27,9 +28,16 @@ interface ChatComposerProps {
   platformOptions: ChatComposerOption[];
   onPlatformChange: (value: string) => void;
   onUploadClick?: () => void;
-  uploadPreviewUrl?: string | null;
-  uploadPreviewName?: string | null;
+  uploadPreviews?: Array<{
+    url: string;
+    name: string;
+  }>;
+  selectedUploadIndex?: number;
+  onSelectUpload?: (index: number) => void;
+  onMoveUpload?: (fromIndex: number, toIndex: number) => void;
   onClearUploadPreview?: () => void;
+  analysisMode: AnalysisMode;
+  onAnalysisModeChange: (value: AnalysisMode) => void;
   sellingPointsValue: string;
   onSellingPointsChange: (value: string) => void;
   sellingPointsOpen: boolean;
@@ -51,9 +59,13 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
   platformOptions,
   onPlatformChange,
   onUploadClick,
-  uploadPreviewUrl,
-  uploadPreviewName,
+  uploadPreviews = [],
+  selectedUploadIndex = 0,
+  onSelectUpload,
+  onMoveUpload,
   onClearUploadPreview,
+  analysisMode,
+  onAnalysisModeChange,
   sellingPointsValue,
   onSellingPointsChange,
   sellingPointsOpen,
@@ -64,10 +76,11 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const platformMenuRef = useRef<HTMLDivElement | null>(null);
   const [platformMenuOpen, setPlatformMenuOpen] = useState(false);
+  const [draggingUploadIndex, setDraggingUploadIndex] = useState<number | null>(null);
+  const [dragOverUploadIndex, setDragOverUploadIndex] = useState<number | null>(null);
   const hasText = value.trim().length > 0;
   const activePlatform =
     platformOptions.find((option) => option.value === platform) ?? platformOptions[0];
-
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) {
@@ -119,35 +132,121 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
     [handleSubmit],
   );
 
+  const handleUploadDrop = useCallback(
+    (targetIndex: number) => {
+      if (
+        draggingUploadIndex === null ||
+        draggingUploadIndex === targetIndex ||
+        !onMoveUpload
+      ) {
+        setDragOverUploadIndex(null);
+        setDraggingUploadIndex(null);
+        return;
+      }
+      onMoveUpload(draggingUploadIndex, targetIndex);
+      onSelectUpload?.(targetIndex);
+      setDragOverUploadIndex(null);
+      setDraggingUploadIndex(null);
+    },
+    [draggingUploadIndex, onMoveUpload, onSelectUpload],
+  );
+
   return (
     <div className={cn('w-full', className)}>
       <div className="mx-auto min-h-[96px] w-full max-w-[960px] rounded-[28px] bg-[#212121] px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
-        {uploadPreviewUrl ? (
-          <div className="mb-3 flex items-start">
-            <div className="relative h-20 w-20 overflow-hidden rounded-xl">
-              <video
-                src={uploadPreviewUrl}
-                className="h-full w-full object-cover"
-                muted
-                playsInline
-                preload="metadata"
-              />
+        {uploadPreviews.length ? (
+          <div className="mb-3 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-400">
+                {uploadPreviews.length === 1
+                  ? '1 个视频待上传'
+                  : `${uploadPreviews.length} 个视频待上传，可拖拽调整顺序`}
+              </p>
               {onClearUploadPreview ? (
                 <button
                   type="button"
                   onClick={onClearUploadPreview}
                   disabled={toolsDisabled}
                   aria-label="移除附件"
-                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/75 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b] text-white transition hover:bg-[#343434] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               ) : null}
             </div>
-            <div className="min-w-0 pl-3 pt-1">
-              <p className="truncate text-[11px] font-medium text-slate-200">
-                {uploadPreviewName || '已选择视频文件'}
-              </p>
+
+            <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {uploadPreviews.map((preview, index) => {
+                const isActive = index === selectedUploadIndex;
+                const isDragging = index === draggingUploadIndex;
+                const isDragOver = index === dragOverUploadIndex;
+                return (
+                  <button
+                    key={`${preview.name}-${index}`}
+                    type="button"
+                    onClick={() => onSelectUpload?.(index)}
+                    draggable={!toolsDisabled}
+                    onDragStart={(event) => {
+                      setDraggingUploadIndex(index);
+                      setDragOverUploadIndex(index);
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', String(index));
+                    }}
+                    onDragEnter={() => {
+                      if (!toolsDisabled && draggingUploadIndex !== null) {
+                        setDragOverUploadIndex(index);
+                      }
+                    }}
+                    onDragOver={(event) => {
+                      if (toolsDisabled || draggingUploadIndex === null) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      if (dragOverUploadIndex !== index) {
+                        setDragOverUploadIndex(index);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      handleUploadDrop(index);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingUploadIndex(null);
+                      setDragOverUploadIndex(null);
+                    }}
+                    disabled={toolsDisabled}
+                    className={cn(
+                      'group relative flex w-[84px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-[#262626] text-left transition',
+                      isActive
+                        ? 'border-sky-500/50 shadow-[0_0_0_1px_rgba(14,165,233,0.25)]'
+                        : 'border-white/10 hover:border-white/20',
+                      isDragOver && 'border-emerald-400/60 shadow-[0_0_0_1px_rgba(52,211,153,0.35)]',
+                      isDragging && 'scale-[0.98] opacity-50',
+                      toolsDisabled && 'cursor-not-allowed opacity-60',
+                      !toolsDisabled && 'cursor-grab active:cursor-grabbing',
+                    )}
+                  >
+                    <div className="relative h-14 w-full overflow-hidden">
+                      <video
+                        src={preview.url}
+                        className="h-full w-full object-cover transition group-hover:scale-[1.03]"
+                        muted
+                        playsInline
+                        preload="metadata"
+                      />
+                      <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
+                        {index + 1}
+                      </span>
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <p className="line-clamp-2 text-[10px] leading-4 text-slate-300">
+                        {preview.name}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -214,6 +313,32 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             <Sparkles className="h-4 w-4" />
             <span>Selling Points</span>
           </button>
+
+          <div className="inline-flex rounded-full border border-white/10 bg-[#2b2b2b] p-1">
+            {([
+              ['keyframe', '关键帧'],
+              ['every_second', '逐帧分析'],
+            ] as const).map(([value, label]) => {
+              const selected = analysisMode === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => onAnalysisModeChange(value)}
+                  disabled={toolsDisabled}
+                  className={cn(
+                    'inline-flex h-7 items-center justify-center rounded-full px-3 text-[11px] font-medium transition',
+                    selected
+                      ? 'bg-sky-500/15 text-sky-200'
+                      : 'text-slate-400 hover:text-slate-200',
+                    toolsDisabled && 'cursor-not-allowed opacity-50',
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {sellingPointsOpen ? (

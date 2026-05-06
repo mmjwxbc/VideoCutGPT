@@ -80,6 +80,7 @@ class SerializationService:
                 "导出视频：\n"
                 f"文件名：{working_state.edited_video.file_name}\n"
                 f"下载地址：{working_state.edited_video.download_url}\n"
+                f"实际时长：{working_state.edited_video.actual_duration_seconds:.2f}s\n"
                 f"导出说明：{working_state.edited_video.summary or '已生成可下载成片。'}"
             )
         elif "run_video_edit_subagent" in action_names and working_state.edited_video.error_message:

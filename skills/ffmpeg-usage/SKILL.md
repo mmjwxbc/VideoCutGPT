@@ -6,12 +6,34 @@ description: "基于Ffmpeg和第三方API的音视频处理，包括，格式转
 
 ## 概述
 
-本技能提供基于 ffmpeg 的全面音视频处理能力，包括经过实战验证的命令和工作流，适用于常见多媒体任务、平台特定优化，以及质量与文件大小管理的最佳实践。
+本技能提供基于 ffmpeg 的全面音视频处理能力，包括常见处理策略、命令模板和工作流，适用于常见多媒体任务、平台特定优化，以及质量与文件大小管理的最佳实践。
 
-**版本：** 1.0.0
-**要求：** ffmpeg >= 4.0，ffprobe（可选但推荐）
+所有命令都只是模板，不得原样复制执行。Agent 必须先结合 `ffprobe`、输入文件真实流信息、用户目标、输出平台和上一次 stderr，再动态生成最终命令。
+
+**版本：** 1.1.0
+**要求：** ffmpeg >= 4.0，ffprobe（强烈推荐，默认应使用）
 
 当用户提及视频或音频处理任务、格式转换、社交媒体优化或多媒体编辑时，Claude 应使用本技能。
+
+## 生成 ffmpeg 命令的强制规则
+
+1. 执行前必须先用 `ffprobe` 检查所有输入文件的流信息，至少确认：
+   - 是否存在视频流 / 音频流 / 字幕流
+   - 编码格式、分辨率、帧率、时长
+   - 音频声道数、采样率
+2. 本文中的所有 ffmpeg 命令都只是模板，不得原样复制执行。
+3. 只要使用了视频滤镜，例如 `scale`、`crop`、`subtitles`、`overlay`、`pad`、`fps`，就禁止使用 `-c:v copy`。
+4. 只要使用了音频滤镜，例如 `amix`、`volume`、`adelay`、`afade`、`atrim`，就禁止使用 `-c:a copy`。
+5. 使用 `-map 1:a:0` 或任何显式音频映射前，必须先确认对应输入确实存在音频流。
+6. 用户说“加背景音乐”时，默认理解为“保留原声并混入背景音乐”，不是直接替换原音频。
+7. 背景音乐短于视频、但需求是全程铺音乐时，应优先考虑 `-stream_loop -1`，并结合时长控制，避免提前结束。
+8. 输出 MP4 且面向社交平台时，默认优先：
+   - `-c:v libx264`
+   - `-pix_fmt yuv420p`
+   - `-movflags +faststart`
+   - `-c:a aac`
+9. 命令失败后，禁止重复执行完全相同的命令；必须根据 stderr 和流信息调整参数后再重试。
+10. 如果项目允许，优先让 agent 输出结构化参数，由 Python builder 基于 `ffprobe` 结果生成命令，而不是让 agent 直接写完整 command string。
 
 ## 适用场景
 
@@ -134,15 +156,78 @@ ffmpeg -i input.mp4 -vn -acodec pcm_s16le -ar 44100 -ac 2 output.wav
 ffmpeg -i input.wav -c:a aac -b:a 192k output.m4a
 ```
 
-**添加背景音乐：**
+**添加背景音乐必须先区分场景，禁止把单一命令当成通用方案。**
+
+#### 场景 A：替换原音频，且不改视频画面
+
+适用条件：
+- 用户明确要求替换原音频
+- 不保留原声
+- 不做缩放、裁剪、字幕、水印等视频处理
+
+策略：
+- 可以保留 `-c:v copy`
+- 但必须先确认第二个输入存在音频流
+- 必须显式说明这是“替换原音频”，不是混音
+
+模板：
 ```bash
-ffmpeg -i video.mp4 -i music.mp3 -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest output.mp4
+ffmpeg -i video.mp4 -i music.mp3 \
+  -map 0:v:0 -map 1:a:0 \
+  -c:v copy \
+  -c:a aac -b:a 192k \
+  -movflags +faststart \
+  output.mp4
 ```
 
-**混合音频（叠加）：**
+#### 场景 B：保留原声并混合背景音乐
+
+适用条件：
+- 用户说“加背景音乐”
+- 默认要保留原视频人声、环境声或解说
+
+策略：
+- 使用 `amix` 和 `volume`
+- 必须先确认原视频和背景音乐都存在音频流
+- 如果背景音乐短于视频且要全程铺底，优先考虑 `-stream_loop -1`
+- 不要默认使用 `-shortest`，除非需求就是按最短流截断
+
+模板：
 ```bash
-ffmpeg -i video.mp4 -i music.mp3 -filter_complex "[0:a][1:a]amix=inputs=2:duration=first" -c:v copy output.mp4
+ffmpeg -i video.mp4 -stream_loop -1 -i music.mp3 \
+  -filter_complex "[1:a]volume=0.18[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]" \
+  -map 0:v:0 -map "[aout]" \
+  -c:v copy \
+  -c:a aac -b:a 192k \
+  -movflags +faststart \
+  output.mp4
 ```
+
+#### 场景 C：同时需要缩放、裁剪、字幕、水印或其他画面处理
+
+适用条件：
+- 需要任何视频滤镜
+- 或者要输出平台适配版本
+
+策略：
+- 必须重新编码视频
+- 使用 `libx264`
+- 典型情况包括 `scale`、`crop`、`pad`、`subtitles`、`overlay`
+
+模板：
+```bash
+ffmpeg -i video.mp4 -stream_loop -1 -i music.mp3 \
+  -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[vout];[1:a]volume=0.18[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]" \
+  -map "[vout]" -map "[aout]" \
+  -c:v libx264 -preset medium -crf 23 \
+  -pix_fmt yuv420p \
+  -c:a aac -b:a 128k \
+  -movflags +faststart \
+  output.mp4
+```
+
+说明：
+- 上述模板仍然不能直接照抄执行，必须先基于真实流信息决定是否有 `0:a`、是否需要 `-stream_loop -1`、背景音乐音量、时长策略和输出编码参数。
 
 ### 5. 视频编辑
 
@@ -352,10 +437,11 @@ ffmpeg -loop 1 -i image.jpg -c:v libx264 -t 5 -pix_fmt yuv420p output.mp4
    ffprobe -v quiet -print_format json -show_format -show_streams input.mp4
    ```
 
-2. **尽可能使用 `-c copy` 避免重新编码：**
+2. **仅在没有对应滤镜处理时才考虑 `-c copy`：**
    ```bash
    ffmpeg -i input.mp4 -ss 00:01:00 -t 30 -c copy output.mp4
    ```
+   一旦用了视频滤镜，禁止 `-c:v copy`；一旦用了音频滤镜，禁止 `-c:a copy`。
 
 3. **处理前用 `-t` 参数预览效果：**
    ```bash
@@ -369,9 +455,19 @@ ffmpeg -loop 1 -i image.jpg -c:v libx264 -t 5 -pix_fmt yuv420p output.mp4
    - 28 = 可接受质量，文件更小
    - 范围：0（无损）到 51（最差质量）
 
-5. **为 Web 视频添加 `-movflags +faststart`：**
+5. **为 Web / 社交平台 MP4 默认添加 `-movflags +faststart`：**
    - 启用渐进式播放
    - 将元数据移至文件开头
+
+6. **MP4 社交平台默认优先使用兼容输出：**
+   - `-c:v libx264`
+   - `-pix_fmt yuv420p`
+   - `-c:a aac`
+   - 必要时再补 `-b:a`、`-ar`、`-ac`
+
+7. **失败后必须基于 stderr 调整：**
+   - 不能重复执行完全相同命令
+   - 要根据具体错误修改 `map`、编码器、像素格式、滤镜链、时长策略或输入流选择
 
 ## 错误处理
 
@@ -388,16 +484,35 @@ ffmpeg -loop 1 -i image.jpg -c:v libx264 -t 5 -pix_fmt yuv420p output.mp4
 当用户请求音视频处理时：
 
 1. **识别任务类型**
-2. **从本技能中选择合适的命令**
-3. **验证前置条件**（ffmpeg 已安装、输入文件存在）
-4. **执行前说明命令的作用**
-5. **执行命令**并进行错误处理
-6. **验证输出**是否成功创建
-7. **提供优化建议**（如适用）
+2. **先用 `ffprobe` 获取真实输入信息**
+3. **从本技能中选择合适的处理策略，而不是直接复制命令模板**
+4. **优先生成结构化参数；仅在没有 builder 时才生成命令**
+5. **验证前置条件**（ffmpeg 已安装、输入文件存在、输出路径可写）
+6. **执行前说明命令或参数为什么这样生成**
+7. **执行命令**并进行错误处理
+8. **验证输出**是否成功创建
+9. **提供优化建议**（如适用）
 
 对于复杂工作流，应分步骤执行并逐一说明。
 
 **视频拼接注意事项：** 尽可能使用 printf 配合进程替换来避免临时文件（参见拼接部分的方法二）。仅在必要时使用临时 list.txt 文件。
+
+## 更推荐的工具形态
+
+相较于让 agent 直接生成完整 ffmpeg command string，更推荐在代码层提供结构化工具，由 Python builder 基于 `ffprobe` 结果生成最终命令。例如：
+
+- `AddMusicInput`
+- `TranscodeVideoInput`
+- `BurnSubtitlesInput`
+- `ResizeForPlatformInput`
+- `MergeSegmentsInput`
+
+推荐模式：
+
+1. agent 只输出结构化参数
+2. Python 先 `ffprobe` 输入文件
+3. builder 根据流信息、平台要求和用户意图拼装最终命令
+4. 失败后由 builder/agent 根据 stderr 调整参数，而不是重复原命令
 
 ## 示例
 

@@ -7,9 +7,11 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 from dataclasses import asdict
 from typing import Any, Dict, List
 
+from app.agent.runtime import ToolResult
 from app.core.config import settings
 from app.models import AgentTurn, CaptionSession, EditedVideoArtifact, GlobalEditingState, RenderedClipSegment, utcnow
 from app.services.caption_assistant_runtime.clip_derivation import ClipDerivationService
@@ -70,7 +72,6 @@ class VideoExportService:
         payload = parse_json_object(action_input)
         segment_id = str(payload.get("segment_id", "")).strip() if isinstance(payload, dict) else ""
         drop_audio = bool(payload.get("drop_audio")) if isinstance(payload, dict) else False
-        speed_override = payload.get("speed") if isinstance(payload, dict) else None
         vf_override = str(payload.get("vf_override", "")).strip() if isinstance(payload, dict) else ""
         af_override = str(payload.get("af_override", "")).strip() if isinstance(payload, dict) else ""
         notes = str(payload.get("notes", "")).strip() if isinstance(payload, dict) else ""
@@ -112,7 +113,6 @@ class VideoExportService:
             output_path=output_path,
             aspect_ratio=decision.aspect_ratio,
             drop_audio=drop_audio,
-            speed_override=float(speed_override) if speed_override is not None else None,
             vf_override=vf_override or None,
             af_override=af_override or None,
         )
@@ -121,30 +121,66 @@ class VideoExportService:
             await self.run_ffmpeg_command(command_args)
             if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
                 raise RuntimeError("片段渲染完成，但未生成有效片段文件。")
+            probe = self.probe_media(output_path)
+            expected_duration = round(float(target_segment.output_duration_seconds or 0), 4)
+            actual_duration = round(float(probe.get("duration_seconds") or 0), 4)
+            duration_delta = round(abs(actual_duration - expected_duration), 4)
+            duration_ok = duration_delta <= 0.3
+            rendered.expected_duration_seconds = expected_duration
+            rendered.actual_duration_seconds = actual_duration
+            rendered.duration_delta_seconds = duration_delta
+            rendered.duration_ok = duration_ok
+            rendered.probe_metadata = probe
+            if not duration_ok:
+                raise RuntimeError(
+                    f"片段 {target_segment.id} 时长校验失败：expected={expected_duration:.2f}s, "
+                    f"actual={actual_duration:.2f}s, delta={duration_delta:.2f}s。"
+                )
             rendered.status = "done"
             rendered.file_name = output_name
             rendered.storage_path = output_path
             rendered.error_message = ""
-            rendered.summary = target_segment.purpose or target_segment.visual_instruction
+            rendered.summary = (
+                f"片段 {target_segment.id} 渲染完成，时长 {actual_duration:.2f}s / 目标 {expected_duration:.2f}s。"
+            )
             rendered.size_bytes = os.path.getsize(output_path)
             rendered.updated_at = utcnow()
+            working_state.edited_video.error_message = ""
             decision.updated_at = rendered.updated_at
-            return (
-                f"片段 {target_segment.id} 已渲染完成。"
-                f"\n原视频：{target_segment.source_start}-{target_segment.source_end}"
-                f"\n成片：{target_segment.timeline_start}-{target_segment.timeline_end}"
-                f"\n文件：{output_name}"
+            return ToolResult(
+                ok=True,
+                summary=(
+                    f"片段 {target_segment.id} 已渲染完成。"
+                    f"\n原视频：{target_segment.source_start}-{target_segment.source_end}"
+                    f"\n成片：{target_segment.timeline_start}-{target_segment.timeline_end}"
+                    f"\n文件：{output_name}"
+                ),
+                artifact_type="rendered_segment",
+                expected_duration_seconds=expected_duration,
+                actual_duration_seconds=actual_duration,
+                duration_ok=True,
+                probe_metadata=probe,
             )
         except Exception as exc:
             rendered.status = "blocked"
             rendered.error_message = str(exc)
+            rendered.duration_ok = False
             rendered.updated_at = utcnow()
             decision.updated_at = rendered.updated_at
             working_state.edited_video.error_message = str(exc)
-            return (
-                f"片段 {target_segment.id} 渲染失败，请基于错误修正后重试："
-                f"\n错误：{exc}"
-                f"\n片段：{json.dumps(asdict(target_segment), ensure_ascii=False)}"
+            return ToolResult(
+                ok=False,
+                summary=(
+                    f"片段 {target_segment.id} 渲染失败，请基于错误修正后重试："
+                    f"\n错误：{exc}"
+                    f"\n片段：{json.dumps(asdict(target_segment), ensure_ascii=False)}"
+                ),
+                artifact_type="rendered_segment",
+                expected_duration_seconds=round(float(target_segment.output_duration_seconds or 0), 4),
+                actual_duration_seconds=round(float(rendered.actual_duration_seconds or 0), 4) or None,
+                duration_ok=False,
+                probe_metadata=rendered.probe_metadata,
+                error=str(exc),
             )
 
     async def tool_merge_rendered_segments(
@@ -158,8 +194,6 @@ class VideoExportService:
         del user_prompt
         decision = working_state.executable_edit
         self._clip_derivation_service.ensure_rendered_segment_entries(decision)
-        if not self._clip_derivation_service.all_segments_rendered(decision):
-            raise RuntimeError("仍有片段未完成渲染，不能执行最终合并。")
 
         logger.info(
             "merge_rendered_segments subtitle draft preview: %s",
@@ -211,6 +245,12 @@ class VideoExportService:
         merge_args.append(merged_path)
 
         try:
+            incomplete_segments = self.collect_incomplete_segments(decision)
+            if incomplete_segments:
+                raise RuntimeError(
+                    "仍有片段未完成渲染，不能执行最终合并："
+                    + ", ".join(incomplete_segments)
+                )
             await self.run_ffmpeg_command(merge_args)
             decision.merge_command = shlex.join(merge_args)
             decision.merged_segments_path = merged_path
@@ -220,9 +260,43 @@ class VideoExportService:
             if burn_subtitles and working_state.subtitle_draft.strip():
                 subtitle_path = self.write_subtitle_sidecar(turn.turn_id, working_state.subtitle_draft)
                 if not subtitle_path:
-                    raise RuntimeError(
-                        "字幕解析失败：字幕草稿中未找到符合 `00:00-00:03 字幕内容` 格式的时间轴！"
-                        "请重新调用 write_subtitles，仅传入 guidance 让底层模型重新生成规范格式。"
+                    return ToolResult(
+                        ok=False,
+                        summary=(
+                            "字幕解析失败：字幕草稿中未找到符合 `00:00-00:03 字幕内容` 格式的时间轴！"
+                            "请重新调用 write_subtitles，仅传入 guidance 让底层模型重新生成规范格式。"
+                        ),
+                        artifact_type="edited_video",
+                        error=(
+                            "字幕解析失败：字幕草稿中未找到符合 `00:00-00:03 字幕内容` 格式的时间轴！"
+                        ),
+                        error_code="SUBTITLE_TIMELINE_PARSE_FAILED",
+                        retry_same_tool_allowed=False,
+                        required_action={
+                            "tool": "write_subtitles",
+                            "input": {
+                                "action": "rewrite",
+                                "guidance": (
+                                    "重新生成规范字幕。每行必须严格为 `00:00-00:03 字幕内容` 格式。"
+                                    "不要 markdown、不要表格、不要编号、不要解释文字、不要单点时间戳。"
+                                ),
+                                "format": "timeline_plain",
+                                "strict": True,
+                                "total_duration_seconds": decision.total_duration_seconds,
+                            },
+                        },
+                        next_tool="write_subtitles",
+                        next_tool_input={
+                            "action": "rewrite",
+                            "guidance": (
+                                "重新生成规范字幕。每行必须严格为 `00:00-00:03 字幕内容` 格式。"
+                                "不要 markdown、不要表格、不要编号、不要解释文字、不要单点时间戳。"
+                            ),
+                            "format": "timeline_plain",
+                            "strict": True,
+                            "total_duration_seconds": decision.total_duration_seconds,
+                        },
+                        duration_ok=False,
                     )
             if subtitle_path:
                 escaped_subtitle = self.escape_subtitle_filter_path(subtitle_path)
@@ -254,21 +328,57 @@ class VideoExportService:
                         os.remove(final_path)
                     os.replace(merged_path, final_path)
 
+            final_probe = self.probe_media(final_path)
+            expected_total_duration = round(
+                sum(float(segment.output_duration_seconds or 0) for segment in decision.segments),
+                4,
+            )
+            actual_total_duration = round(float(final_probe.get("duration_seconds") or 0), 4)
+            duration_delta = round(abs(actual_total_duration - expected_total_duration), 4)
+            target_duration = round(float(decision.total_duration_seconds or expected_total_duration), 4)
+            target_delta = round(abs(actual_total_duration - target_duration), 4)
+            duration_ok = duration_delta <= 1.0 and target_delta <= 1.0
+            if not duration_ok:
+                raise RuntimeError(
+                    "最终成片时长校验失败："
+                    f" expected_total={expected_total_duration:.2f}s,"
+                    f" actual_total={actual_total_duration:.2f}s,"
+                    f" target={target_duration:.2f}s,"
+                    f" delta={duration_delta:.2f}s,"
+                    f" target_delta={target_delta:.2f}s。"
+                )
+
             working_state.edited_video = EditedVideoArtifact(
                 file_name=os.path.basename(final_path),
                 download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video?v={turn.turn_id}",
                 storage_path=final_path,
                 command=final_command,
-                summary=decision.summary or turn.user_prompt.strip(),
+                summary=(
+                    (decision.summary or turn.user_prompt.strip())
+                    + f"\n实际导出时长：{actual_total_duration:.2f}s"
+                    + f"\n目标时长：{target_duration:.2f}s"
+                ),
                 error_message="",
                 size_bytes=os.path.getsize(final_path),
+                expected_duration_seconds=expected_total_duration,
+                actual_duration_seconds=actual_total_duration,
+                duration_ok=True,
+                probe_metadata=final_probe,
             )
             self._task_board_service.complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
             self._task_board_service.set_task_status(turn, "verify_export", "done", notes="已生成可下载成片。")
-            return (
-                "片段已合并并生成最终成片。"
-                f"\n文件名：{working_state.edited_video.file_name}"
-                f"\n下载地址：{working_state.edited_video.download_url}"
+            return ToolResult(
+                ok=True,
+                summary=(
+                    "片段已合并并生成最终成片。"
+                    f"\n文件名：{working_state.edited_video.file_name}"
+                    f"\n下载地址：{working_state.edited_video.download_url}"
+                ),
+                artifact_type="edited_video",
+                expected_duration_seconds=expected_total_duration,
+                actual_duration_seconds=actual_total_duration,
+                duration_ok=True,
+                probe_metadata=final_probe,
             )
         except Exception as exc:
             decision.merge_error_message = str(exc)
@@ -281,7 +391,13 @@ class VideoExportService:
                 requested=True,
                 needs_refresh=False,
             )
-            return f"片段合并失败：{exc}"
+            return ToolResult(
+                ok=False,
+                summary=f"片段合并失败：{exc}",
+                artifact_type="edited_video",
+                duration_ok=False,
+                error=str(exc),
+            )
 
     async def tool_run_bash_ffmpeg(
         self,
@@ -323,15 +439,20 @@ class VideoExportService:
             await self.run_ffmpeg_command(command_args)
             if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
                 raise RuntimeError("ffmpeg 命令执行完成，但未生成有效导出文件。")
+            probe = self.probe_media(output_path)
+            actual_duration = round(float(probe.get("duration_seconds") or 0), 4)
 
             working_state.edited_video = EditedVideoArtifact(
                 file_name=output_name,
                 download_url=f"/api/caption/assistant/session/{session.session_id}/exported-video?v={turn.turn_id}",
                 storage_path=output_path,
                 command=attempted_command,
-                summary=summary,
+                summary=summary + f"\n实际导出时长：{actual_duration:.2f}s",
                 error_message="",
                 size_bytes=os.path.getsize(output_path),
+                actual_duration_seconds=actual_duration,
+                duration_ok=True,
+                probe_metadata=probe,
             )
             self._task_board_service.complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
             self._task_board_service.set_task_status(turn, "run_video_edit_subagent", "done", notes="ffmpeg 导出已完成。", current_focus="verify_export")
@@ -394,7 +515,6 @@ class VideoExportService:
         output_path: str,
         aspect_ratio: str,
         drop_audio: bool,
-        speed_override: float | None = None,
         vf_override: str | None = None,
         af_override: str | None = None,
     ) -> List[str]:
@@ -403,13 +523,17 @@ class VideoExportService:
         end = self._clip_derivation_service.timestamp_to_seconds(segment.source_end)
         if end <= start:
             raise RuntimeError(f"片段 {segment.id} 的 source_end 必须大于 source_start。")
-        speed = max(0.5, min(2.0, float(speed_override if speed_override is not None else (segment.speed or 1.0))))
-        setpts = "PTS-STARTPTS" if abs(speed - 1.0) < 1e-6 else f"(PTS-STARTPTS)/{speed}"
+        source_duration = round(float(segment.source_duration_seconds or (end - start)), 4)
+        expected_duration = round(float(segment.output_duration_seconds or 0), 4)
+        if source_duration <= 0 or expected_duration <= 0:
+            raise RuntimeError(f"片段 {segment.id} 的目标时长无效。")
+        speed = round(max(0.25, source_duration / expected_duration), 4)
+        setpts = f"(PTS-STARTPTS)/{speed}"
         vf = (
             vf_override.strip()
             if vf_override and vf_override.strip()
             else (
-                f"setpts={setpts},"
+                f"setpts={setpts},trim=duration={expected_duration},setpts=PTS-STARTPTS,"
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
             )
@@ -443,13 +567,14 @@ class VideoExportService:
             args.extend(["-map", "0:v:0", "-map", "0:a:0"])
             if af_override and af_override.strip():
                 audio_filter = af_override.strip()
-            elif abs(speed - 1.0) >= 1e-6:
-                audio_filter = ",".join(self.build_atempo_filters(speed))
             else:
-                audio_filter = ""
+                audio_filter = ",".join(
+                    [*self.build_atempo_filters(speed), f"atrim=duration={expected_duration}", "asetpts=PTS-STARTPTS"]
+                )
             if audio_filter:
                 args.extend(["-af", audio_filter])
-            args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-shortest"])
+            args.extend(["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"])
+        args.extend(["-t", str(expected_duration)])
         args.append(output_path)
         return args
 
@@ -509,6 +634,62 @@ class VideoExportService:
             "16:9": (1920, 1080),
         }
         return mapping.get(aspect_ratio.strip(), (1080, 1920))
+
+    def collect_incomplete_segments(self, decision: Any) -> List[str]:
+        self._clip_derivation_service.ensure_rendered_segment_entries(decision)
+        incomplete: List[str] = []
+        for segment in decision.segments:
+            rendered = self._clip_derivation_service.get_rendered_segment(decision, segment.id)
+            if rendered is None:
+                incomplete.append(f"{segment.id}:missing")
+                continue
+            if rendered.status != "done":
+                incomplete.append(f"{segment.id}:{rendered.status}")
+                continue
+            if not rendered.storage_path or not os.path.exists(rendered.storage_path):
+                incomplete.append(f"{segment.id}:missing_file")
+                continue
+            if not rendered.duration_ok:
+                incomplete.append(f"{segment.id}:duration_invalid")
+        return incomplete
+
+    def probe_media(self, media_path: str) -> Dict[str, Any]:
+        if shutil.which("ffprobe") is None:
+            raise RuntimeError("当前运行环境未安装 ffprobe，无法校验导出时长。")
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                media_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"ffprobe 校验失败：{stderr[-1000:]}")
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"ffprobe 输出解析失败：{exc}") from exc
+        format_payload = payload.get("format", {}) if isinstance(payload, dict) else {}
+        duration_raw = format_payload.get("duration", 0)
+        try:
+            duration_seconds = float(duration_raw or 0)
+        except (TypeError, ValueError):
+            duration_seconds = 0.0
+        return {
+            "duration_seconds": round(duration_seconds, 4),
+            "format": format_payload,
+            "streams": payload.get("streams", []) if isinstance(payload, dict) else [],
+            "path": media_path,
+        }
 
     def escape_subtitle_filter_path(self, path: str) -> str:
         return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")

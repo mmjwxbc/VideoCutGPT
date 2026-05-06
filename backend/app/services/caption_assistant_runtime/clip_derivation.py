@@ -79,6 +79,7 @@ class ClipDerivationService:
                     timeline_start=timeline_start,
                     timeline_end=timeline_end,
                     output_duration_seconds=float(item.get("output_duration_seconds", 0) or 0),
+                    source_duration_seconds=0.0,
                     purpose=str(item.get("purpose", "")).strip(),
                     visual_instruction=str(item.get("visual_instruction", "")).strip(),
                     speed=speed,
@@ -103,13 +104,32 @@ class ClipDerivationService:
         decision.segments.sort(key=lambda item: self.timestamp_to_seconds(item.timeline_start))
         for segment in decision.segments:
             source_duration = self.timestamp_to_seconds(segment.source_end) - self.timestamp_to_seconds(segment.source_start)
-            speed = max(0.5, min(2.0, float(segment.speed or 1.0)))
-            segment.speed = speed
-            if segment.output_duration_seconds <= 0:
-                segment.output_duration_seconds = max(0.2, source_duration / speed)
+            timeline_duration = self.timestamp_to_seconds(segment.timeline_end) - self.timestamp_to_seconds(segment.timeline_start)
+            if source_duration <= 0:
+                raise RuntimeError(f"片段 {segment.id} 的 source 时间范围无效。")
+            if timeline_duration <= 0 and segment.output_duration_seconds <= 0:
+                raise RuntimeError(f"片段 {segment.id} 的 timeline 时间范围无效。")
+            segment.source_duration_seconds = round(source_duration, 4)
+            segment.output_duration_seconds = round(
+                max(0.2, timeline_duration if timeline_duration > 0 else segment.output_duration_seconds),
+                4,
+            )
+            segment.speed = round(
+                max(0.25, segment.source_duration_seconds / segment.output_duration_seconds),
+                4,
+            )
         if decision.total_duration_seconds <= 0 and decision.segments:
-            decision.total_duration_seconds = max(
-                self.timestamp_to_seconds(segment.timeline_end) for segment in decision.segments
+            decision.total_duration_seconds = round(
+                max(self.timestamp_to_seconds(segment.timeline_end) for segment in decision.segments),
+                4,
+            )
+        elif decision.segments:
+            decision.total_duration_seconds = round(
+                max(
+                    float(decision.total_duration_seconds or 0),
+                    max(self.timestamp_to_seconds(segment.timeline_end) for segment in decision.segments),
+                ),
+                4,
             )
         self.ensure_rendered_segment_entries(decision)
         decision.merged_segments_path = ""
@@ -187,6 +207,7 @@ class ClipDerivationService:
             (rendered := self.get_rendered_segment(decision, segment.id)) is not None
             and rendered.status == "done"
             and rendered.storage_path
+            and rendered.duration_ok
             for segment in decision.segments
         )
 

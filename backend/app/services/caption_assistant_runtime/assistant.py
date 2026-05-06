@@ -4,12 +4,11 @@ import asyncio
 import copy
 import json
 import os
-from dataclasses import asdict
 from threading import Lock
 from typing import Any, AsyncIterator, Dict, List
 from uuid import uuid4
 
-from app.agent.runtime import LightPlanningReActRuntime, ReActStep, ToolRegistry
+from app.agent.runtime import LightPlanningReActRuntime, OpenAIToolCallingRuntime, ReActStep, ToolRegistry
 from app.core.config import settings
 from app.models import AgentTurn, AnalysisMode, CaptionSession, EditedVideoArtifact, GlobalEditingState, TurnEventItem, TurnTaskBoard, utcnow
 from app.services.caption_assistant_runtime.broker import CaptionEventBroker
@@ -172,7 +171,7 @@ class CaptionConversationAssistant:
                 targets = self.build_open_tool_targets()
                 turn.plan_summary = self.build_runtime_task_brief()
                 turn.task_board = TurnTaskBoard(summary="等待 agent 自主判断并按需拆解任务。")
-                scratchpad = await self.execute_targets(
+                scratchpad, runtime_final_text = await self.execute_targets(
                     session=session,
                     turn=turn,
                     working_state=working_state,
@@ -186,6 +185,7 @@ class CaptionConversationAssistant:
                     working_state=working_state,
                     user_prompt=user_prompt,
                     scratchpad=scratchpad,
+                    runtime_final_text=runtime_final_text,
                     targets=targets,
                 )
             except Exception as exc:
@@ -200,11 +200,12 @@ class CaptionConversationAssistant:
         user_prompt: str,
         targets: Dict[str, Any],
         task_brief: str,
-    ) -> List[Dict[str, str]]:
+    ) -> tuple[List[Dict[str, str]], str]:
         registry = self.build_tool_registry(session, turn, working_state, user_prompt, targets)
-        runtime = LightPlanningReActRuntime(
-            adapter=self.completion_service.adapter_factory.get_text_adapter(),
+        runtime = OpenAIToolCallingRuntime(
             model=settings.deepseek_chat_model,
+            base_url=settings.deepseek_base_url,
+            api_key=settings.deepseek_api_key or "",
             tool_registry=registry,
             max_steps=settings.agent_max_steps,
             timeout_seconds=settings.glm_request_timeout_seconds,
@@ -214,8 +215,6 @@ class CaptionConversationAssistant:
             task_brief=task_brief,
             context_prompt=self.build_runtime_context_prompt(session, working_state, targets),
             completion_guard=self.build_completion_guard(turn, targets, working_state),
-            fallback_step=self.build_fallback_step(turn, targets),
-            should_skip_step=self.build_step_skipper(),
             progress=self.noop_progress,
             trace=lambda thought, _action, observation: self.append_turn_thought(
                 session,
@@ -224,7 +223,7 @@ class CaptionConversationAssistant:
                 observation,
             ),
         )
-        return result.scratchpad
+        return result.scratchpad, result.final_text
 
     async def finalize_turn(
         self,
@@ -234,6 +233,7 @@ class CaptionConversationAssistant:
         working_state: GlobalEditingState,
         user_prompt: str,
         scratchpad: List[Dict[str, str]],
+        runtime_final_text: str,
         targets: Dict[str, Any],
     ) -> None:
         del targets
@@ -253,15 +253,22 @@ class CaptionConversationAssistant:
                 needs_refresh=False,
             )
 
-        final_text = (
-            await self.content_generation_service.compose_assistant_reply(
-                session,
-                working_state,
-                user_prompt,
-                scratchpad,
-                action_names,
-            )
-        ).strip()
+        should_compose_reply = (
+            not runtime_final_text.strip()
+            or "run_video_edit_subagent" in action_names
+            or "merge_rendered_segments" in action_names
+        )
+        final_text = runtime_final_text.strip()
+        if should_compose_reply:
+            final_text = (
+                await self.content_generation_service.compose_assistant_reply(
+                    session,
+                    working_state,
+                    user_prompt,
+                    scratchpad,
+                    action_names,
+                )
+            ).strip()
         if not final_text:
             final_text = self.serialization_service.build_assistant_reply_fallback(
                 working_state,
@@ -413,6 +420,7 @@ class CaptionConversationAssistant:
         )
         for tool in [
             ReadVideoEditContextTool(context),
+            WriteSubtitlesTool(context),
             RenderClipSegmentTool(context),
             MergeRenderedSegmentsTool(context),
         ]:
@@ -476,7 +484,7 @@ class CaptionConversationAssistant:
                 notes=self.clip_derivation_service.summarize_clip_segments(working_state.executable_edit.segments)[:3000],
                 current_focus="run_video_edit_subagent",
             )
-            return json.dumps(asdict(working_state.executable_edit), ensure_ascii=False)
+            return f"已生成 {len(working_state.executable_edit.segments)} 个原视频片段映射。"
         except Exception as exc:
             self.task_board_service.set_task_status(
                 turn,
@@ -504,11 +512,10 @@ class CaptionConversationAssistant:
 
     def build_runtime_task_brief(self) -> str:
         return (
-            "理解并精准执行用户的最新指令。"
-            "\n【严重警告】只调用完成指令所需的工具。但是，如果用户一次性下达了多个连贯任务（例如：写文案 -> 出方案 -> 导出视频），你必须在当前轮次内连续调用多个工具一口气做完最终产物！绝不允许在中间步骤停下来询问用户“草稿是否满意”、“是否继续”。"
-            "\n【多任务强制规则】面对包含 2 个及以上步骤的需求，你必须第一步先调用 create_task_board 把所有步骤规划好！系统会监督你全部完成。"
-            "\n如果用户要求导出视频，必须先补齐视觉摘要、字幕和剪辑方案，再调用 derive_clip_segments 和 run_video_edit_subagent。"
-            "\n只有当所有要求的任务都已彻底完成，或者严重缺乏前置信息时，才触发 finalize。"
+            "理解并完成用户这一轮的最新目标。"
+            "\n只调用真正有帮助的工具，避免无意义重复。"
+            "\n如果用户要求导出视频，先确认视觉摘要、字幕和剪辑方案是否足够，再建立片段映射并执行导出。"
+            "\n如果信息不足，可以直接向用户说明缺口；如果任务已完成，直接给出最终回复。"
         )
 
     def build_recent_turn_memory(self, session: CaptionSession, current_turn_id: str, *, limit: int = 6) -> str:
@@ -538,11 +545,10 @@ class CaptionConversationAssistant:
         history = self.build_recent_turn_memory(session, session.active_turn_id, limit=6)
         instruction = """
 [当前任务指引]
-- 如果这是会话的第一轮且用户没提明确要求，请先通过对话了解目标。
-- 【严禁中途打断】如果用户指令包含多个步骤（如生成字幕并出方案并剪辑），请连续调用工具达成所有最终目的，绝对不要在某一个中间产物生成后停下来让用户确认！一气呵成！
-- 服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径，不允许向用户再次索要。
-- 导出视频时：应先调用 derive_clip_segments，再调用 run_video_edit_subagent 交给专门的剪辑导出子代理执行。
-- 只有当你认为本轮所有物理操作已全部完成，才执行 finalize。
+- 优先依据当前状态选择下一步，不要照搬固定 SOP。
+- 服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径，不需要再次向用户索要。
+- 如果要导出视频，通常应先调用 derive_clip_segments，再调用 run_video_edit_subagent。
+- 只能基于真实工具结果继续规划，不要假设工具已经成功。
 """.strip()
         current_state = (
             "[当前剪辑状态 - 权威事实]\n"
@@ -581,6 +587,7 @@ class CaptionConversationAssistant:
             "\n4. 如果发现当前片段映射明显不够支撑目标时长，或 segment 语义混乱，应回到主 agent 重新做更密的关键帧分析和片段映射，而不是强行 finalize。"
             "\n5. 只有当所有片段都渲染完成后，才能调用 merge_rendered_segments 合并并在需要时烧录字幕。"
             "\n6. 如果 render_clip_segment 或 merge_rendered_segments 返回错误，必须基于错误内容修改输入参数后再次调用对应工具，不能重复提交相同参数，也不能直接 finalize。"
+            "\n7. 如果 merge_rendered_segments 明确指出字幕时间轴格式错误，必须先调用 write_subtitles 重新生成严格 timeline_plain 格式字幕，成功后才能再次合并。"
             f"\n用户目标：{user_prompt.strip() or '执行视频导出'}"
             f"\n平台：{session.platform}"
             f"\n字幕是否可用：{bool(working_state.subtitle_draft.strip())}"

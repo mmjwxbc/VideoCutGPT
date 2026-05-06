@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from app.agent.runtime import LightPlanningReActRuntime
 from app.core.config import settings
 from app.models import AgentTurn, CaptionSession, GlobalEditingState
+from app.services.caption_assistant_runtime.shared import parse_json_object
 
 
 @dataclass
@@ -80,7 +81,12 @@ class VideoEditExportSubAgent:
                 notes="导出子代理已完成视频拼接与导出。",
                 current_focus="verify_export",
             )
-            return result.scratchpad[-1]["observation"] if result.scratchpad else "导出子代理已完成视频导出。"
+            if result.scratchpad:
+                last_observation = result.scratchpad[-1]["observation"]
+                payload = parse_json_object(last_observation)
+                if isinstance(payload, dict) and payload.get("summary"):
+                    return str(payload["summary"]).strip()
+            return "导出子代理已完成视频导出。"
 
         last_error = working_state.edited_video.error_message or turn.task_board.blocked_reason or "导出子代理执行失败。"
         assistant.task_board_service.set_task_status(

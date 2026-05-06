@@ -29,8 +29,8 @@ const isStaleSessionVersion = (nextVersion?: number, currentVersion?: number) =>
 };
 
 const CaptionGenerator: React.FC = () => {
-  const [video, setVideo] = useState<File | null>(null);
-  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [videos, setVideos] = useState<File[]>([]);
+  const [videoPreviewUrls, setVideoPreviewUrls] = useState<string[]>([]);
   const [platform, setPlatform] = useState<string>('tiktok');
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('keyframe');
   const [productManual, setProductManual] = useState<string>('');
@@ -49,6 +49,7 @@ const CaptionGenerator: React.FC = () => {
   const [mobilePane, setMobilePane] = useState<'chat' | 'workspace'>('chat');
   const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
   const [pendingUserPrompt, setPendingUserPrompt] = useState<string | null>(null);
+  const [selectedUploadIndex, setSelectedUploadIndex] = useState<number>(0);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -235,22 +236,23 @@ const CaptionGenerator: React.FC = () => {
   }, [pendingUserPrompt, turns.length, session?.updated_at]);
 
   useEffect(() => {
-    if (!video) {
-      setVideoPreviewUrl(null);
+    if (!videos.length) {
+      setVideoPreviewUrls([]);
       return;
     }
 
-    const objectUrl = URL.createObjectURL(video);
-    setVideoPreviewUrl(objectUrl);
+    const objectUrls = videos.map((video) => URL.createObjectURL(video));
+    setVideoPreviewUrls(objectUrls);
 
     return () => {
-      URL.revokeObjectURL(objectUrl);
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [video]);
+  }, [videos]);
 
   const handleVideoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const nextFile = event.target.files?.[0] ?? null;
-    setVideo(nextFile);
+    const nextFiles = Array.from(event.target.files ?? []);
+    setVideos(nextFiles);
+    setSelectedUploadIndex(0);
     event.target.value = '';
   };
 
@@ -260,8 +262,9 @@ const CaptionGenerator: React.FC = () => {
     sessionRef.current = null;
     setPendingUserPrompt(null);
     setSession(null);
-    setVideo(null);
-    setVideoPreviewUrl(null);
+    setVideos([]);
+    setVideoPreviewUrls([]);
+    setSelectedUploadIndex(0);
     setProductManual('');
     setAnalysisMode('keyframe');
     setSellingPointsOpen(false);
@@ -293,16 +296,47 @@ const CaptionGenerator: React.FC = () => {
   };
 
   const clearUploadedVideo = useCallback(() => {
-    setVideo(null);
-    setVideoPreviewUrl(null);
+    setVideos([]);
+    setVideoPreviewUrls([]);
+    setSelectedUploadIndex(0);
+  }, []);
+
+  const moveUpload = useCallback((fromIndex: number, toIndex: number) => {
+    setVideos((current) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.length ||
+        toIndex >= current.length ||
+        fromIndex === toIndex
+      ) {
+        return current;
+      }
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setSelectedUploadIndex((current) => {
+      if (current === fromIndex) {
+        return toIndex;
+      }
+      if (fromIndex < current && toIndex >= current) {
+        return current - 1;
+      }
+      if (fromIndex > current && toIndex <= current) {
+        return current + 1;
+      }
+      return current;
+    });
   }, []);
 
   const submitPrompt = async (promptValue: string) => {
     const normalizedPrompt = promptValue.trim();
 
     if (composerMode === 'initial') {
-      if (!video) {
-        setError('请先上传视频文件');
+      if (!videos.length) {
+        setError('请先上传至少一个视频文件');
         return;
       }
 
@@ -318,7 +352,7 @@ const CaptionGenerator: React.FC = () => {
 
       try {
         const response = await createCaptionAssistantSession(
-          video,
+          videos,
           platform,
           normalizedPrompt,
           productManual || null,
@@ -377,6 +411,14 @@ const CaptionGenerator: React.FC = () => {
     activeSessionItem?.title ||
     session?.turns[0]?.user_prompt?.slice(0, 28) ||
     '未命名会话';
+  const uploadPreviews = useMemo(
+    () =>
+      videos.map((video, index) => ({
+        name: video.name,
+        url: videoPreviewUrls[index] ?? '',
+      })),
+    [videoPreviewUrls, videos],
+  );
 
   return (
     <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
@@ -415,8 +457,10 @@ const CaptionGenerator: React.FC = () => {
           setPlatform={setPlatform}
           composerMode={composerMode}
           uploadInputRef={uploadInputRef}
-          videoPreviewUrl={videoPreviewUrl}
-          videoName={video?.name ?? null}
+          uploadPreviews={uploadPreviews}
+          selectedUploadIndex={selectedUploadIndex}
+          onSelectUpload={setSelectedUploadIndex}
+          onMoveUpload={moveUpload}
           clearUploadedVideo={clearUploadedVideo}
           productManual={productManual}
           setProductManual={setProductManual}
@@ -439,9 +483,10 @@ const CaptionGenerator: React.FC = () => {
 
       <input
         ref={uploadInputRef}
-        name="video"
+        name="videos"
         type="file"
         accept="video/*"
+        multiple
         className="sr-only"
         onChange={handleVideoChange}
       />

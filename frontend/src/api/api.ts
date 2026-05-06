@@ -13,14 +13,16 @@ export const captionSessionExportedVideoUrl = (sessionId: string) =>
   `/api/caption/assistant/session/${sessionId}/exported-video`;
 
 export const createCaptionAssistantSession = async (
-  video: File,
+  videos: File[],
   platform: string,
   prompt: string,
   productManual: string | null,
   analysisMode: AnalysisMode,
 ): Promise<CaptionAssistantSession> => {
   const formData = new FormData();
-  formData.append('video', video);
+  videos.forEach((video) => {
+    formData.append('videos', video);
+  });
   formData.append('platform', platform);
   formData.append('prompt', prompt);
   formData.append('analysis_mode', analysisMode);

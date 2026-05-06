@@ -59,6 +59,10 @@ class EditedVideoArtifact:
     summary: str = ""
     error_message: str = ""
     size_bytes: int = 0
+    expected_duration_seconds: float = 0.0
+    actual_duration_seconds: float = 0.0
+    duration_ok: bool = False
+    probe_metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utcnow)
 
 
@@ -70,6 +74,7 @@ class ClipSegment:
     timeline_start: str
     timeline_end: str
     output_duration_seconds: float
+    source_duration_seconds: float = 0.0
     purpose: str = ""
     visual_instruction: str = ""
     speed: float = 1.0
@@ -86,6 +91,11 @@ class RenderedClipSegment:
     error_message: str = ""
     summary: str = ""
     size_bytes: int = 0
+    expected_duration_seconds: float = 0.0
+    actual_duration_seconds: float = 0.0
+    duration_delta_seconds: float = 0.0
+    duration_ok: bool = False
+    probe_metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utcnow)
     updated_at: str = field(default_factory=utcnow)
 

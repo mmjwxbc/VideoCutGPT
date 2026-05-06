@@ -22,8 +22,13 @@ interface ConversationPanelProps {
   setPlatform: (value: string) => void;
   composerMode: 'initial' | 'followup';
   uploadInputRef: React.RefObject<HTMLInputElement>;
-  videoPreviewUrl: string | null;
-  videoName: string | null;
+  uploadPreviews: Array<{
+    url: string;
+    name: string;
+  }>;
+  selectedUploadIndex: number;
+  onSelectUpload: (index: number) => void;
+  onMoveUpload: (fromIndex: number, toIndex: number) => void;
   clearUploadedVideo?: () => void;
   productManual: string;
   setProductManual: (value: string) => void;
@@ -50,8 +55,10 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   setPlatform,
   composerMode,
   uploadInputRef,
-  videoPreviewUrl,
-  videoName,
+  uploadPreviews,
+  selectedUploadIndex,
+  onSelectUpload,
+  onMoveUpload,
   clearUploadedVideo,
   productManual,
   setProductManual,
@@ -127,45 +134,6 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       </div>
 
       <div className={`shrink-0 bg-[#090909] px-6 pb-5 pt-4 ${mobilePane === 'workspace' ? 'hidden lg:block' : ''}`}>
-        <div className="mx-auto mb-3 flex w-full max-w-[960px] items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-[#141414] px-4 py-3">
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500">
-              Analysis Mode
-            </p>
-            <p className="mt-1 text-[12px] text-slate-400">
-              选择首轮视频理解方式。逐秒分析会读取更多帧，耗时更长。
-            </p>
-          </div>
-          <div className="inline-flex rounded-full border border-white/10 bg-[#1d1d1d] p-1">
-            {([
-              ['keyframe', '关键帧分析'],
-              ['every_second', '逐秒分析'],
-            ] as const).map(([value, label]) => {
-              const selected = analysisMode === value;
-              const disabled = composerMode !== 'initial' || isRunning;
-              return (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => {
-                    if (!disabled) {
-                      setAnalysisMode(value);
-                    }
-                  }}
-                  disabled={disabled}
-                  className={`inline-flex h-9 items-center justify-center rounded-full px-3.5 text-[12px] font-medium transition ${
-                    selected
-                      ? 'bg-sky-500/15 text-sky-200'
-                      : 'text-slate-400 hover:text-slate-200'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
         <ChatComposer
           className="mx-auto"
           value={draftPrompt}
@@ -181,9 +149,13 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
             }
             uploadInputRef.current?.click();
           }}
-          uploadPreviewUrl={composerMode === 'initial' ? videoPreviewUrl : null}
-          uploadPreviewName={composerMode === 'initial' ? videoName : null}
+          uploadPreviews={composerMode === 'initial' ? uploadPreviews : []}
+          selectedUploadIndex={selectedUploadIndex}
+          onSelectUpload={onSelectUpload}
+          onMoveUpload={onMoveUpload}
           onClearUploadPreview={composerMode === 'initial' ? clearUploadedVideo : undefined}
+          analysisMode={analysisMode}
+          onAnalysisModeChange={setAnalysisMode}
           sellingPointsValue={productManual}
           onSellingPointsChange={setProductManual}
           sellingPointsOpen={sellingPointsOpen}
