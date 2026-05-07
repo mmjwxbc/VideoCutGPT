@@ -4,6 +4,9 @@ import { AnalysisMode, CaptionAssistantSession } from '../types';
 const api = axios.create({
   baseURL: '/api',
   timeout: 60000 * 10,
+  headers: {
+    'X-Requested-With': 'XMLHttpRequest',
+  },
 });
 
 export const captionSessionEventsUrl = (sessionId: string) =>
@@ -63,6 +66,15 @@ export interface B2UploadResult {
   fileName: string;
 }
 
+export interface CaptionAssistantAccessIdentity {
+  cloudflare_access_enabled: boolean;
+  access_user_id: string;
+  email: string;
+  name: string;
+  visible_session_count: number;
+  visible_session_ids: string[];
+}
+
 const DEFAULT_CHUNK_SIZE = 512 * 1024;
 const UPLOAD_STATE_PREFIX = 'caption-upload:';
 const ALLOWED_VIDEO_TYPES = new Set([
@@ -71,6 +83,27 @@ const ALLOWED_VIDEO_TYPES = new Set([
   'video/webm',
   'video/x-matroska',
 ]);
+
+export const CAPTION_UPLOAD_STORAGE_PREFIX = UPLOAD_STATE_PREFIX;
+
+export const isLikelyAccessAuthError = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) {
+    return false;
+  }
+
+  const status = error.response?.status;
+  if (status === 401 || status === 403) {
+    return true;
+  }
+
+  const request = error.request as XMLHttpRequest | undefined;
+  const responseURL = typeof request?.responseURL === 'string' ? request.responseURL : '';
+  if (/cdn-cgi\/access|access\/login|cdn-cgi\/trace/i.test(responseURL)) {
+    return true;
+  }
+
+  return error.code === 'ERR_NETWORK' || /network error/i.test(error.message);
+};
 
 const buildUploadStorageKey = (file: File) =>
   `${UPLOAD_STATE_PREFIX}${file.name}:${file.size}:${file.lastModified}:${file.type}`;
@@ -358,6 +391,11 @@ export const getCaptionAssistantSession = async (
 
 export const listCaptionAssistantSessions = async (): Promise<CaptionAssistantSession[]> => {
   const response = await api.get('/caption/assistant/sessions');
+  return response.data;
+};
+
+export const getCaptionAssistantAccessIdentity = async (): Promise<CaptionAssistantAccessIdentity> => {
+  const response = await api.get('/caption/assistant/debug/identity');
   return response.data;
 };
 

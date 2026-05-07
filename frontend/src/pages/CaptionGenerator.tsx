@@ -5,10 +5,13 @@ import ConversationPanel from '../components/caption-studio/ConversationPanel';
 import HistorySidebar from '../components/caption-studio/HistorySidebar';
 import WorkspaceSidebar from '../components/caption-studio/WorkspaceSidebar';
 import {
+  CAPTION_UPLOAD_STORAGE_PREFIX,
   captionSessionEventsUrl,
   continueCaptionAssistantSession,
   createCaptionAssistantSession,
+  getCaptionAssistantAccessIdentity,
   getCaptionAssistantSession,
+  isLikelyAccessAuthError,
   listCaptionAssistantSessions,
   uploadVideoToB2,
   uploadVideoInChunks,
@@ -25,6 +28,8 @@ const PLATFORM_OPTIONS = [
 
 const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTIVE_SESSION_STORAGE_KEY = 'caption-active-session-id';
+const ACCESS_RECOVERY_MESSAGE = '检测到登录状态异常，无法访问会话接口。请重新认证后重试。';
+const ACCESS_REAUTH_PATH = '/api/access/complete';
 
 type UploadPreviewStatus = 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
 
@@ -92,6 +97,7 @@ const CaptionGenerator: React.FC = () => {
   const [session, setSession] = useState<CaptionAssistantSession | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
+  const [accessRecoveryRequired, setAccessRecoveryRequired] = useState<boolean>(false);
   const [sseTimedOut, setSseTimedOut] = useState<boolean>(false);
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([]);
   const [composerMode, setComposerMode] = useState<'initial' | 'followup'>(
@@ -125,6 +131,12 @@ const CaptionGenerator: React.FC = () => {
     }
     return isLoopbackHostname(window.location.hostname);
   }, []);
+  const isProtectedDeployment = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return !isLoopbackHostname(window.location.hostname);
+  }, []);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -142,8 +154,66 @@ const CaptionGenerator: React.FC = () => {
     });
     setComposerMode('followup');
     setLoading(nextSession.status === 'processing');
+    setAccessRecoveryRequired(false);
     setError('');
   }, []);
+
+  const clearClientSessionStorage = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const localStorageKeys: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key) {
+        continue;
+      }
+      if (
+        key === ACTIVE_SESSION_STORAGE_KEY ||
+        key.startsWith(CAPTION_UPLOAD_STORAGE_PREFIX)
+      ) {
+        localStorageKeys.push(key);
+      }
+    }
+    localStorageKeys.forEach((key) => window.localStorage.removeItem(key));
+    window.sessionStorage.clear();
+  }, []);
+
+  const handleAccessRecovery = useCallback(
+    async (nextError: unknown, fallbackMessage: string) => {
+      if (isProtectedDeployment && isLikelyAccessAuthError(nextError)) {
+        try {
+          await getCaptionAssistantAccessIdentity();
+          setAccessRecoveryRequired(false);
+          setError('登录状态已恢复，正在重试访问会话数据。');
+          return false;
+        } catch {
+          setAccessRecoveryRequired(true);
+          setError(ACCESS_RECOVERY_MESSAGE);
+          return true;
+        }
+      }
+      setAccessRecoveryRequired(false);
+      setError(getAxiosErrorMessage(nextError, fallbackMessage));
+      return false;
+    },
+    [isProtectedDeployment],
+  );
+
+  const reloadCurrentPage = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.location.reload();
+  }, []);
+
+  const restartAccessLogin = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    clearClientSessionStorage();
+    window.location.assign(ACCESS_REAUTH_PATH);
+  }, [clearClientSessionStorage]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -161,9 +231,10 @@ const CaptionGenerator: React.FC = () => {
       const latestSession = await getCaptionAssistantSession(sessionId);
       applyAuthoritativeSession(latestSession);
     } catch (err) {
+      await handleAccessRecovery(err, '读取会话状态失败，请刷新后重试');
       console.error('Error reconciling caption session:', err);
     }
-  }, [applyAuthoritativeSession]);
+  }, [applyAuthoritativeSession, handleAccessRecovery]);
 
   const upsertSessionHistory = useCallback(
     (nextSession: CaptionAssistantSession, fallbackTitle?: string) => {
@@ -198,29 +269,47 @@ const CaptionGenerator: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
 
+    const applyLoadedSessions = (sessions: CaptionAssistantSession[]) => {
+      if (cancelled || !sessions.length) {
+        return;
+      }
+      const historyItems = sessions.map((item) => buildSessionHistoryItem(item));
+      setSessionHistory(historyItems);
+
+      if (typeof window === 'undefined') {
+        return;
+      }
+      const preferredSessionId = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+      if (!preferredSessionId) {
+        return;
+      }
+      const nextSession = sessions.find((item) => item.session_id === preferredSessionId);
+      if (!nextSession || cancelled) {
+        return;
+      }
+      applyAuthoritativeSession(nextSession);
+    };
+
     const loadPersistedSessions = async () => {
       try {
         const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSession);
-        if (cancelled || !sessions.length) {
-          return;
-        }
-        const historyItems = sessions.map((item) => buildSessionHistoryItem(item));
-        setSessionHistory(historyItems);
-
-        if (typeof window === 'undefined') {
-          return;
-        }
-        const preferredSessionId = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
-        if (!preferredSessionId) {
-          return;
-        }
-        const nextSession = sessions.find((item) => item.session_id === preferredSessionId);
-        if (!nextSession || cancelled) {
-          return;
-        }
-        applyAuthoritativeSession(nextSession);
+        applyLoadedSessions(sessions);
       } catch (err) {
         if (!cancelled) {
+          if (await handleAccessRecovery(err, '读取历史会话列表失败，请刷新重试')) {
+            return;
+          }
+          if (isLikelyAccessAuthError(err)) {
+            try {
+              const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSession);
+              applyLoadedSessions(sessions);
+              return;
+            } catch (retryError) {
+              setError(getAxiosErrorMessage(retryError, '读取历史会话列表失败，请刷新重试'));
+              console.error('Retrying caption sessions after access recovery failed:', retryError);
+              return;
+            }
+          }
           console.error('Error listing caption sessions:', err);
         }
       }
@@ -230,7 +319,7 @@ const CaptionGenerator: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [applyAuthoritativeSession]);
+  }, [applyAuthoritativeSession, handleAccessRecovery]);
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -412,12 +501,14 @@ const CaptionGenerator: React.FC = () => {
     setComposerMode('initial');
     setLoading(false);
     setSseTimedOut(false);
+    setAccessRecoveryRequired(false);
     setError('');
     setStatusMessage('');
   };
 
   const openSessionFromHistory = async (sessionId: string) => {
     setLoading(true);
+    setAccessRecoveryRequired(false);
     setError('');
     try {
       const nextSession = await getCaptionAssistantSession(sessionId);
@@ -431,7 +522,7 @@ const CaptionGenerator: React.FC = () => {
       });
       upsertSessionHistory(nextSession);
     } catch (err) {
-      setError('读取历史会话失败，请重试');
+      await handleAccessRecovery(err, '读取历史会话失败，请重试');
       console.error('Error getting caption assistant session:', err);
     } finally {
       setLoading(false);
@@ -507,6 +598,7 @@ const CaptionGenerator: React.FC = () => {
 
       setLoading(true);
       setSseTimedOut(false);
+      setAccessRecoveryRequired(false);
       setError('');
       setStatusMessage(
         useLegacyLocalUpload ? '准备分片上传视频...' : '准备直传视频到 B2...',
@@ -637,7 +729,7 @@ const CaptionGenerator: React.FC = () => {
         );
         setPendingUserPrompt(null);
         setLoading(false);
-        setError(getAxiosErrorMessage(err, '初始化对话助手失败'));
+        await handleAccessRecovery(err, '初始化对话助手失败');
         console.error('Error creating caption assistant session:', err);
       }
 
@@ -650,6 +742,7 @@ const CaptionGenerator: React.FC = () => {
 
     setLoading(true);
     setSseTimedOut(false);
+    setAccessRecoveryRequired(false);
     setError('');
     setStatusMessage('');
     setPendingUserPrompt(normalizedPrompt);
@@ -668,7 +761,7 @@ const CaptionGenerator: React.FC = () => {
     } catch (err) {
       setPendingUserPrompt(null);
       setLoading(false);
-      setError('继续修改失败，请重试');
+      await handleAccessRecovery(err, '继续修改失败，请重试');
       console.error('Error continuing caption assistant session:', err);
     }
   };
@@ -690,6 +783,24 @@ const CaptionGenerator: React.FC = () => {
       })),
     [uploadProgress, videoPreviewUrls, videos],
   );
+  const errorActions = accessRecoveryRequired ? (
+    <>
+      <button
+        type="button"
+        onClick={restartAccessLogin}
+        className="inline-flex h-9 items-center justify-center rounded-full bg-rose-100 px-4 text-[12px] font-medium text-rose-950 transition hover:bg-white"
+      >
+        重新登录
+      </button>
+      <button
+        type="button"
+        onClick={reloadCurrentPage}
+        className="inline-flex h-9 items-center justify-center rounded-full border border-rose-800/80 bg-transparent px-4 text-[12px] font-medium text-rose-100 transition hover:border-rose-700 hover:bg-rose-950/50"
+      >
+        仅刷新页面
+      </button>
+    </>
+  ) : null;
   return (
     <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
       <div
@@ -736,11 +847,13 @@ const CaptionGenerator: React.FC = () => {
           setProductManual={setProductManual}
           sellingPointsOpen={sellingPointsOpen}
           setSellingPointsOpen={setSellingPointsOpen}
+          accessRecoveryRequired={accessRecoveryRequired}
           error={
             sseTimedOut && !error
               ? 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。'
               : error
           }
+          errorActions={errorActions}
           isSubmitting={isSubmitting}
         />
 

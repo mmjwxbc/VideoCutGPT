@@ -38,6 +38,8 @@ interface ConversationPanelProps {
   sellingPointsOpen: boolean;
   setSellingPointsOpen: React.Dispatch<React.SetStateAction<boolean>>;
   error: string;
+  accessRecoveryRequired?: boolean;
+  errorActions?: React.ReactNode;
   isSubmitting: boolean;
 }
 
@@ -70,6 +72,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   sellingPointsOpen,
   setSellingPointsOpen,
   error,
+  accessRecoveryRequired = false,
+  errorActions,
   isSubmitting,
 }) => (
   <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
@@ -171,16 +175,39 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           isSubmitting={isSubmitting}
         />
 
-        {error ? (
+        {error && !accessRecoveryRequired ? (
           <div
             className="mx-auto mt-3 w-full max-w-[960px] rounded-2xl border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-[12px] text-rose-200"
             aria-live="polite"
           >
-            {error}
+            <p>{error}</p>
+            {errorActions ? <div className="mt-3 flex flex-wrap gap-2">{errorActions}</div> : null}
           </div>
         ) : null}
       </div>
     </div>
+
+    {accessRecoveryRequired && error ? (
+      <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 px-6">
+        <div
+          className="w-full max-w-md rounded-[28px] border border-rose-900/70 bg-[#12090b] p-6 text-center shadow-2xl shadow-black/40"
+          aria-live="assertive"
+          role="dialog"
+          aria-modal="true"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-rose-300/70">
+            Access Required
+          </p>
+          <h3 className="mt-3 text-[20px] font-semibold tracking-[-0.04em] text-rose-50">
+            需要重新认证
+          </h3>
+          <p className="mt-3 text-[13px] leading-6 text-rose-100/85">{error}</p>
+          {errorActions ? (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">{errorActions}</div>
+          ) : null}
+        </div>
+      </div>
+    ) : null}
   </section>
 );
 
