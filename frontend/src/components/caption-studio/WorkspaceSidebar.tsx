@@ -7,7 +7,6 @@ import { Button } from '../ui/button';
 import { captionSessionExportedVideoUrl } from '../../api/api';
 
 interface WorkspaceSidebarProps {
-  mobilePane: 'chat' | 'workspace';
   session: CaptionAssistantSession | null;
   activeSessionTitle: string;
   workflowRows: WorkflowStateRow[];
@@ -43,7 +42,6 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({
 );
 
 const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
-  mobilePane,
   session,
   activeSessionTitle,
   workflowRows,
@@ -74,9 +72,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
 
   return (
     <aside
-      className={`min-h-0 overflow-hidden bg-[#0f0f0f] ${
-        mobilePane === 'chat' ? 'hidden lg:block' : ''
-      }`}
+      className="hidden min-h-0 overflow-hidden bg-[#0f0f0f] lg:block"
     >
       <Panel
         title=""

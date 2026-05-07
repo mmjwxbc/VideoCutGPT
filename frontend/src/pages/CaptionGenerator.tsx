@@ -4,6 +4,7 @@ import axios from 'axios';
 import ConversationPanel from '../components/caption-studio/ConversationPanel';
 import HistorySidebar from '../components/caption-studio/HistorySidebar';
 import WorkspaceSidebar from '../components/caption-studio/WorkspaceSidebar';
+import { DrawerType } from '../components/caption-studio/MobileDrawerTabs';
 import {
   CAPTION_UPLOAD_STORAGE_PREFIX,
   captionSessionEventsUrl,
@@ -103,7 +104,7 @@ const CaptionGenerator: React.FC = () => {
   const [composerMode, setComposerMode] = useState<'initial' | 'followup'>(
     'initial',
   );
-  const [mobilePane, setMobilePane] = useState<'chat' | 'workspace'>('chat');
+  const [activeDrawer, setActiveDrawer] = useState<DrawerType | null>(null);
   const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
   const [pendingUserPrompt, setPendingUserPrompt] = useState<string | null>(null);
   const [selectedUploadIndex, setSelectedUploadIndex] = useState<number>(0);
@@ -499,6 +500,7 @@ const CaptionGenerator: React.FC = () => {
     setSellingPointsOpen(false);
     setDraftPrompt('请先生成适合投放的英文字幕初稿，并输出20s镜头级剪辑方案。最后剪辑导出视频');
     setComposerMode('initial');
+    setActiveDrawer(null);
     setLoading(false);
     setSseTimedOut(false);
     setAccessRecoveryRequired(false);
@@ -518,7 +520,7 @@ const CaptionGenerator: React.FC = () => {
         setAnalysisMode(nextSession.analysis_mode);
         setSession(nextSession);
         setComposerMode('followup');
-        setMobilePane('chat');
+        setActiveDrawer(null);
       });
       upsertSessionHistory(nextSession);
     } catch (err) {
@@ -716,7 +718,7 @@ const CaptionGenerator: React.FC = () => {
         startTransition(() => {
           setDraftPrompt('');
           setComposerMode('followup');
-          setMobilePane('chat');
+          setActiveDrawer(null);
         });
         upsertSessionHistory(response, normalizedPrompt);
       } catch (err) {
@@ -756,7 +758,7 @@ const CaptionGenerator: React.FC = () => {
       applyAuthoritativeSession(response);
       startTransition(() => {
         setDraftPrompt('');
-        setMobilePane('chat');
+        setActiveDrawer(null);
       });
     } catch (err) {
       setPendingUserPrompt(null);
@@ -820,8 +822,13 @@ const CaptionGenerator: React.FC = () => {
         />
 
         <ConversationPanel
-          mobilePane={mobilePane}
-          setMobilePane={setMobilePane}
+          activeDrawer={activeDrawer}
+          onToggleDrawer={(type) => setActiveDrawer((prev) => (prev === type ? null : type))}
+          onCloseDrawer={() => setActiveDrawer(null)}
+          sessionHistory={sessionHistory}
+          activeSessionId={session?.session_id}
+          onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
+          onReset={resetSession}
           threadRef={threadRef}
           session={session}
           turns={turns}
@@ -855,10 +862,11 @@ const CaptionGenerator: React.FC = () => {
           }
           errorActions={errorActions}
           isSubmitting={isSubmitting}
+          activeSessionTitle={activeSessionTitle}
+          workflowRows={workflowRows}
         />
 
         <WorkspaceSidebar
-          mobilePane={mobilePane}
           session={session}
           activeSessionTitle={activeSessionTitle}
           workflowRows={workflowRows}

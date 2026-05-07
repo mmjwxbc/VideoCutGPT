@@ -1,12 +1,18 @@
 import React from 'react';
 
 import ChatComposer, { ChatComposerOption } from '../ChatComposer';
+import MobileDrawerTabs, { DrawerType } from './MobileDrawerTabs';
 import { AgentTurn, AnalysisMode, CaptionAssistantSession } from '../../types';
-import { AssistantTurnCard, ChatBubble } from './shared';
+import { AssistantTurnCard, ChatBubble, SessionListItem, WorkflowStateRow } from './shared';
 
 interface ConversationPanelProps {
-  mobilePane: 'chat' | 'workspace';
-  setMobilePane: React.Dispatch<React.SetStateAction<'chat' | 'workspace'>>;
+  activeDrawer: DrawerType | null;
+  onToggleDrawer: (type: DrawerType) => void;
+  onCloseDrawer: () => void;
+  sessionHistory: SessionListItem[];
+  activeSessionId?: string;
+  onOpenSession: (sessionId: string) => void | Promise<void>;
+  onReset: () => void;
   threadRef: React.RefObject<HTMLDivElement>;
   session: CaptionAssistantSession | null;
   turns: AgentTurn[];
@@ -41,11 +47,18 @@ interface ConversationPanelProps {
   accessRecoveryRequired?: boolean;
   errorActions?: React.ReactNode;
   isSubmitting: boolean;
+  activeSessionTitle: string;
+  workflowRows: WorkflowStateRow[];
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
-  mobilePane,
-  setMobilePane,
+  activeDrawer,
+  onToggleDrawer,
+  onCloseDrawer,
+  sessionHistory,
+  activeSessionId,
+  onOpenSession,
+  onReset,
   threadRef,
   session,
   turns,
@@ -75,34 +88,26 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   accessRecoveryRequired = false,
   errorActions,
   isSubmitting,
+  activeSessionTitle,
+  workflowRows,
 }) => (
   <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
-    <div className="flex items-center gap-2 border-b border-slate-800 bg-[#0f0f0f] px-4 py-3 lg:hidden">
-      <button
-        type="button"
-        onClick={() => setMobilePane('chat')}
-        className={`inline-flex h-8 flex-1 items-center justify-center rounded-full border text-[12px] font-medium transition ${
-          mobilePane === 'chat'
-            ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
-            : 'border-slate-800 bg-[#171717] text-slate-400'
-        }`}
-      >
-        聊天记录
-      </button>
-      <button
-        type="button"
-        onClick={() => setMobilePane('workspace')}
-        className={`inline-flex h-8 flex-1 items-center justify-center rounded-full border text-[12px] font-medium transition ${
-          mobilePane === 'workspace'
-            ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
-            : 'border-slate-800 bg-[#171717] text-slate-400'
-        }`}
-      >
-        剪辑状态
-      </button>
-    </div>
+    {/* Mobile drawer tabs (replaces old tab toggle) */}
+    <MobileDrawerTabs
+      activeDrawer={activeDrawer}
+      onToggleDrawer={onToggleDrawer}
+      onCloseDrawer={onCloseDrawer}
+      sessionHistory={sessionHistory}
+      activeSessionId={activeSessionId}
+      onOpenSession={onOpenSession}
+      onReset={onReset}
+      session={session}
+      activeSessionTitle={activeSessionTitle}
+      workflowRows={workflowRows}
+    />
 
-    <div className={`flex min-h-0 flex-1 flex-col ${mobilePane === 'workspace' ? 'hidden lg:flex' : ''}`}>
+    {/* Chat thread - always visible on mobile now */}
+    <div className="flex min-h-0 flex-1 flex-col">
       <div
         ref={threadRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#090909] px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -143,7 +148,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         </div>
       </div>
 
-      <div className={`shrink-0 bg-[#090909] px-6 pb-5 pt-4 ${mobilePane === 'workspace' ? 'hidden lg:block' : ''}`}>
+      <div className="shrink-0 bg-[#090909] px-6 pb-5 pt-4">
         <ChatComposer
           className="mx-auto"
           value={draftPrompt}

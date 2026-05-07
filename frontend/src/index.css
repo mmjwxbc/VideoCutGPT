@@ -73,3 +73,52 @@ textarea {
   background: rgba(37, 99, 235, 0.18);
   color: #0f172a;
 }
+
+/* ── Wormhole transition animations ── */
+@keyframes wh-ripple {
+  0% { transform: scale(0); opacity: 0.7; }
+  100% { transform: scale(4); opacity: 0; }
+}
+
+@keyframes wh-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(1080deg); }
+}
+
+@keyframes wh-particle {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  60% { opacity: 0.6; }
+  100% { transform: translate(var(--wh-dx), var(--wh-dy)) scale(0); opacity: 0; }
+}
+
+@keyframes wh-energy-line {
+  0% { transform: translateY(0) scaleY(0.6); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateY(var(--wh-travel)) scaleY(1.4); opacity: 0; }
+}
+
+@keyframes wh-glow-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.wh-ripple-ring {
+  animation: wh-ripple 0.6s ease-out forwards;
+}
+
+.wh-spin-vortex {
+  animation: wh-spin 1.2s linear infinite;
+}
+
+.wh-particle-dot {
+  animation: wh-particle 0.8s ease-in forwards;
+}
+
+.wh-energy-streak {
+  animation: wh-energy-line 1s ease-in-out forwards;
+}
+
+.wh-glow {
+  animation: wh-glow-pulse 0.6s ease-in-out infinite;
+}

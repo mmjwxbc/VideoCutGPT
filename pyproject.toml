@@ -8,6 +8,7 @@ dependencies = [
     "b2>=4.7.0",
     "fastapi>=0.136.0",
     "httpx>=0.28.1",
+    "kokoro>=0.9.4",
     "langchain>=1.2.15",
     "langchain-openai>=1.1.14",
     "langgraph>=1.1.6",
