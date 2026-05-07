@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ArrowUp,
+  Check,
   ChevronDown,
   Mic,
   Plus,
@@ -31,6 +32,8 @@ interface ChatComposerProps {
   uploadPreviews?: Array<{
     url: string;
     name: string;
+    progress: number;
+    status: 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
   }>;
   selectedUploadIndex?: number;
   onSelectUpload?: (index: number) => void;
@@ -47,6 +50,99 @@ interface ChatComposerProps {
 }
 
 const MAX_TEXTAREA_HEIGHT = 160;
+const PROGRESS_RADIUS = 15;
+const PROGRESS_CIRCUMFERENCE = 2 * Math.PI * PROGRESS_RADIUS;
+
+const UploadProgressRing: React.FC<{
+  progress: number;
+  status: 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
+}> = ({ progress, status }) => {
+  if (status === 'idle') {
+    return null;
+  }
+
+  const normalizedProgress = Math.max(0, Math.min(progress, 1));
+  const strokeDashoffset =
+    PROGRESS_CIRCUMFERENCE - normalizedProgress * PROGRESS_CIRCUMFERENCE;
+  const ringClassName =
+    status === 'failed'
+      ? 'text-rose-400'
+      : status === 'done'
+        ? 'text-emerald-400'
+        : 'text-sky-300';
+  const label =
+    status === 'done' ? (
+      <Check className="h-3.5 w-3.5 text-emerald-300" />
+    ) : status === 'failed' ? (
+      <span className="text-[9px] font-semibold text-rose-200">!</span>
+    ) : (
+      <span className="text-[9px] font-semibold text-white">
+        {Math.round(normalizedProgress * 100)}
+      </span>
+    );
+
+  return (
+    <div className="absolute bottom-1.5 right-1.5 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b]/90 backdrop-blur-sm">
+      <svg className="absolute inset-0 -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
+        <circle
+          cx="18"
+          cy="18"
+          r={PROGRESS_RADIUS}
+          fill="none"
+          stroke="rgba(255,255,255,0.16)"
+          strokeWidth="3"
+        />
+        <circle
+          cx="18"
+          cy="18"
+          r={PROGRESS_RADIUS}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={PROGRESS_CIRCUMFERENCE}
+          strokeDashoffset={strokeDashoffset}
+          className={ringClassName}
+        />
+      </svg>
+      <span className="relative flex items-center justify-center">{label}</span>
+    </div>
+  );
+};
+
+const UploadStatusBadge: React.FC<{
+  status: 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
+}> = ({ status }) => {
+  if (status === 'idle') {
+    return null;
+  }
+
+  const toneClassName =
+    status === 'failed'
+      ? 'bg-rose-500/85 text-white'
+      : status === 'done'
+        ? 'bg-emerald-500/85 text-white'
+        : 'bg-sky-500/85 text-white';
+  const label =
+    status === 'uploading'
+      ? '上传中'
+      : status === 'processing'
+        ? '处理中'
+        : status === 'done'
+          ? '完成'
+          : '失败';
+
+  return (
+    <span
+      className={cn(
+        'absolute left-1.5 bottom-1.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium',
+        toneClassName,
+      )}
+    >
+      {label}
+    </span>
+  );
+};
 
 const ChatComposer: React.FC<ChatComposerProps> = ({
   value,
@@ -238,6 +334,16 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                       <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
                         {index + 1}
                       </span>
+                      {(preview.status === 'uploading' ||
+                        preview.status === 'processing' ||
+                        preview.status === 'failed') ? (
+                        <div className="absolute inset-0 bg-[#1f1f1f]/40" />
+                      ) : null}
+                      <UploadStatusBadge status={preview.status} />
+                      <UploadProgressRing
+                        progress={preview.progress}
+                        status={preview.status}
+                      />
                     </div>
                     <div className="px-2 py-1.5">
                       <p className="line-clamp-2 text-[10px] leading-4 text-slate-300">

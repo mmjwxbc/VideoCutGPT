@@ -12,6 +12,7 @@ interface ConversationPanelProps {
   turns: AgentTurn[];
   pendingUserPrompt: string | null;
   isRunning: boolean;
+  submitDisabled: boolean;
   draftPrompt: string;
   setDraftPrompt: (value: string) => void;
   submitPrompt: (value: string) => void | Promise<void>;
@@ -25,6 +26,8 @@ interface ConversationPanelProps {
   uploadPreviews: Array<{
     url: string;
     name: string;
+    progress: number;
+    status: 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
   }>;
   selectedUploadIndex: number;
   onSelectUpload: (index: number) => void;
@@ -45,6 +48,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   turns,
   pendingUserPrompt,
   isRunning,
+  submitDisabled,
   draftPrompt,
   setDraftPrompt,
   submitPrompt,
@@ -139,7 +143,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           value={draftPrompt}
           onChange={setDraftPrompt}
           onSubmit={(nextValue) => void submitPrompt(nextValue)}
-          disabled={isRunning}
+          disabled={submitDisabled}
           platform={platform}
           platformOptions={platformOptions}
           onPlatformChange={setPlatform}

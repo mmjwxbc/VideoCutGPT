@@ -1,4 +1,5 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
 
 import ConversationPanel from '../components/caption-studio/ConversationPanel';
 import HistorySidebar from '../components/caption-studio/HistorySidebar';
@@ -8,6 +9,8 @@ import {
   continueCaptionAssistantSession,
   createCaptionAssistantSession,
   getCaptionAssistantSession,
+  uploadVideoToB2,
+  uploadVideoInChunks,
 } from '../api/api';
 import { SessionListItem, buildSessionHistoryItem, getWorkflowRows } from '../components/caption-studio/shared';
 import { AnalysisMode, CaptionAssistantSession, TurnEventItem } from '../types';
@@ -21,12 +24,43 @@ const PLATFORM_OPTIONS = [
 
 const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
+type UploadPreviewStatus = 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
+
+interface UploadPreviewState {
+  progress: number;
+  status: UploadPreviewStatus;
+}
+
 const isStaleSessionVersion = (nextVersion?: number, currentVersion?: number) => {
   if (typeof nextVersion !== 'number' || typeof currentVersion !== 'number') {
     return false;
   }
   return nextVersion < currentVersion;
 };
+
+const getAxiosErrorMessage = (error: unknown, fallback: string) => {
+  if (!axios.isAxiosError(error)) {
+    return fallback;
+  }
+  const detail = error.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  if (detail && typeof detail === 'object') {
+    if ('error' in detail && Array.isArray(detail.missing_chunks)) {
+      return `分片缺失：${detail.missing_chunks.join(', ')}`;
+    }
+    return JSON.stringify(detail);
+  }
+  return error.message || fallback;
+};
+
+const isLoopbackHostname = (hostname: string) =>
+  hostname === 'localhost' ||
+  hostname === '::1' ||
+  hostname === '[::1]' ||
+  hostname === '127.0.0.1' ||
+  hostname.startsWith('127.');
 
 const CaptionGenerator: React.FC = () => {
   const [videos, setVideos] = useState<File[]>([]);
@@ -50,6 +84,8 @@ const CaptionGenerator: React.FC = () => {
   const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
   const [pendingUserPrompt, setPendingUserPrompt] = useState<string | null>(null);
   const [selectedUploadIndex, setSelectedUploadIndex] = useState<number>(0);
+  const [, setStatusMessage] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<UploadPreviewState[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -61,6 +97,15 @@ const CaptionGenerator: React.FC = () => {
     [session?.global_editing_state?.workflow],
   );
   const isRunning = session ? session.status === 'processing' : loading;
+  const isInitialUploadInFlight =
+    composerMode === 'initial' && pendingUserPrompt !== null && session === null;
+  const submitDisabled = isRunning || isInitialUploadInFlight;
+  const useLegacyLocalUpload = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    return isLoopbackHostname(window.location.hostname);
+  }, []);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -252,6 +297,12 @@ const CaptionGenerator: React.FC = () => {
   const handleVideoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const nextFiles = Array.from(event.target.files ?? []);
     setVideos(nextFiles);
+    setUploadProgress(
+      nextFiles.map(() => ({
+        progress: 0,
+        status: 'idle',
+      })),
+    );
     setSelectedUploadIndex(0);
     event.target.value = '';
   };
@@ -264,6 +315,7 @@ const CaptionGenerator: React.FC = () => {
     setSession(null);
     setVideos([]);
     setVideoPreviewUrls([]);
+    setUploadProgress([]);
     setSelectedUploadIndex(0);
     setProductManual('');
     setAnalysisMode('keyframe');
@@ -273,6 +325,7 @@ const CaptionGenerator: React.FC = () => {
     setLoading(false);
     setSseTimedOut(false);
     setError('');
+    setStatusMessage('');
   };
 
   const openSessionFromHistory = async (sessionId: string) => {
@@ -298,11 +351,28 @@ const CaptionGenerator: React.FC = () => {
   const clearUploadedVideo = useCallback(() => {
     setVideos([]);
     setVideoPreviewUrls([]);
+    setUploadProgress([]);
     setSelectedUploadIndex(0);
+    setStatusMessage('');
   }, []);
 
   const moveUpload = useCallback((fromIndex: number, toIndex: number) => {
     setVideos((current) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.length ||
+        toIndex >= current.length ||
+        fromIndex === toIndex
+      ) {
+        return current;
+      }
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setUploadProgress((current) => {
       if (
         fromIndex < 0 ||
         toIndex < 0 ||
@@ -348,11 +418,105 @@ const CaptionGenerator: React.FC = () => {
       setLoading(true);
       setSseTimedOut(false);
       setError('');
+      setStatusMessage(
+        useLegacyLocalUpload ? '准备分片上传视频...' : '准备直传视频到 B2...',
+      );
       setPendingUserPrompt(normalizedPrompt);
 
       try {
+        const uploadedFilePaths: string[] = [];
+        const uploadedFileIds: string[] = [];
+        for (let index = 0; index < videos.length; index += 1) {
+          const currentFile = videos[index];
+          const fileLabel =
+            videos.length === 1
+              ? currentFile.name
+              : `${index + 1}/${videos.length} ${currentFile.name}`;
+          if (useLegacyLocalUpload) {
+            const uploadResult = await uploadVideoInChunks(currentFile, {
+              onUploadProgress: (progress, uploadedChunks, totalChunks) => {
+                setUploadProgress((current) =>
+                  current.map((item, itemIndex) =>
+                    itemIndex === index
+                      ? {
+                          progress,
+                          status: progress >= 1 ? 'processing' : 'uploading',
+                        }
+                      : item,
+                  ),
+                );
+                setStatusMessage(
+                  `上传视频 ${fileLabel}：已完成 ${uploadedChunks}/${totalChunks} 分片（${Math.round(
+                    progress * 100,
+                  )}%）`,
+                );
+              },
+              onTaskProgress: (task) => {
+                const percent = Math.round(task.progress * 100);
+                setUploadProgress((current) =>
+                  current.map((item, itemIndex) =>
+                    itemIndex === index
+                      ? {
+                          progress: task.status === 'done' ? 1 : Math.max(item.progress, task.progress),
+                          status:
+                            task.status === 'failed'
+                              ? 'failed'
+                              : task.status === 'done'
+                                ? 'done'
+                                : 'processing',
+                        }
+                      : item,
+                  ),
+                );
+                setStatusMessage(
+                  `上传完成，后台处理中 ${fileLabel}：${task.status} ${Number.isFinite(percent) ? `${percent}%` : ''}`.trim(),
+                );
+              },
+            });
+            uploadedFilePaths.push(uploadResult.filePath);
+          } else {
+            const uploadResult = await uploadVideoToB2(currentFile, {
+              onUploadProgress: (progress) => {
+                setUploadProgress((current) =>
+                  current.map((item, itemIndex) =>
+                    itemIndex === index
+                      ? {
+                          progress,
+                          status: progress >= 1 ? 'done' : 'uploading',
+                        }
+                      : item,
+                  ),
+                );
+                setStatusMessage(
+                  `直传视频 ${fileLabel} 到 B2：${Math.round(progress * 100)}%`,
+                );
+              },
+            });
+            setUploadProgress((current) =>
+              current.map((item, itemIndex) =>
+                itemIndex === index
+                  ? {
+                      progress: 1,
+                      status: 'done',
+                    }
+                  : item,
+              ),
+            );
+            setStatusMessage(`视频 ${fileLabel} 已上传到 B2，fileId 已生成。`);
+            uploadedFileIds.push(uploadResult.fileId);
+          }
+        }
+
+        setStatusMessage(
+          useLegacyLocalUpload
+            ? '视频上传与后台预处理完成，正在创建会话...'
+            : '视频已上传到 B2，正在通知后端下载并创建会话...',
+        );
         const response = await createCaptionAssistantSession(
-          videos,
+          {
+            uploadedFilePaths,
+            uploadedFileIds,
+          },
           platform,
           normalizedPrompt,
           productManual || null,
@@ -367,9 +531,16 @@ const CaptionGenerator: React.FC = () => {
         });
         upsertSessionHistory(response, normalizedPrompt);
       } catch (err) {
+        setUploadProgress((current) =>
+          current.map((item) =>
+            item.status === 'uploading' || item.status === 'processing'
+              ? { ...item, status: 'failed' }
+              : item,
+          ),
+        );
         setPendingUserPrompt(null);
         setLoading(false);
-        setError('初始化对话助手失败，请检查后端接口和模型配置');
+        setError(getAxiosErrorMessage(err, '初始化对话助手失败'));
         console.error('Error creating caption assistant session:', err);
       }
 
@@ -383,6 +554,7 @@ const CaptionGenerator: React.FC = () => {
     setLoading(true);
     setSseTimedOut(false);
     setError('');
+    setStatusMessage('');
     setPendingUserPrompt(normalizedPrompt);
 
     try {
@@ -416,10 +588,11 @@ const CaptionGenerator: React.FC = () => {
       videos.map((video, index) => ({
         name: video.name,
         url: videoPreviewUrls[index] ?? '',
+        progress: uploadProgress[index]?.progress ?? 0,
+        status: uploadProgress[index]?.status ?? 'idle',
       })),
-    [videoPreviewUrls, videos],
+    [uploadProgress, videoPreviewUrls, videos],
   );
-
   return (
     <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
       <div
@@ -447,6 +620,7 @@ const CaptionGenerator: React.FC = () => {
           turns={turns}
           pendingUserPrompt={pendingUserPrompt}
           isRunning={isRunning}
+          submitDisabled={submitDisabled}
           draftPrompt={draftPrompt}
           setDraftPrompt={setDraftPrompt}
           submitPrompt={(value) => void submitPrompt(value)}

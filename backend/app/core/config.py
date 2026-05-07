@@ -36,8 +36,15 @@ class Settings(BaseSettings):
     # File Upload Config
     upload_dir: str = "./uploads"
     export_dir: str = "./exports"
-    max_upload_size: int = 50000000
+    max_upload_size: int = 1024 * 1024 * 1024
+    upload_chunk_size: int = 512 * 1024
     ffmpeg_execution_timeout_seconds: int = 600
+
+    # Backblaze B2 Config
+    b2_authorize_url: str = "https://api.backblazeb2.com/b2api/v4/b2_authorize_account"
+    b2_key_id: Optional[str] = None
+    b2_application_key: Optional[str] = None
+    b2_bucket_id: Optional[str] = None
     
     class Config:
         env_file = ".env"
