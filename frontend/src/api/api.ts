@@ -356,4 +356,9 @@ export const getCaptionAssistantSession = async (
   return response.data;
 };
 
+export const listCaptionAssistantSessions = async (): Promise<CaptionAssistantSession[]> => {
+  const response = await api.get('/caption/assistant/sessions');
+  return response.data;
+};
+
 export default api;

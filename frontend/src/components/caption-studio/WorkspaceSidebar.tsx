@@ -49,19 +49,26 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   workflowRows,
 }) => {
   const state = session?.global_editing_state;
-  const editedVideoState = state?.workflow.edited_video;
+  const workflow = state?.workflow;
+  const editedVideoState = workflow?.edited_video;
+  const subtitleDraft = state?.subtitle_draft ?? '';
+  const editingPlan = state?.editing_plan ?? '';
+  const englishTitle = state?.english_title ?? '';
+  const tags = state?.tags ?? [];
+  const videoSummary = state?.video_summary ?? '';
+  const frameAnalyses = state?.frame_analyses ?? [];
   const showEditedVideoCard = Boolean(
     state?.edited_video.download_url ||
       state?.edited_video.error_message ||
       editedVideoState?.requested,
   );
   const hasArtifacts = Boolean(
-    state?.subtitle_draft.trim() ||
-      state?.editing_plan.trim() ||
-      state?.english_title.trim() ||
-      state?.tags.length ||
-      state?.video_summary.trim() ||
-      state?.frame_analyses.length ||
+    subtitleDraft.trim() ||
+      editingPlan.trim() ||
+      englishTitle.trim() ||
+      tags.length ||
+      videoSummary.trim() ||
+      frameAnalyses.length ||
       showEditedVideoCard,
   );
 
@@ -148,45 +155,45 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                   defaultOpen
                 >
                   <div className="space-y-2 text-[12px] leading-5 text-slate-400">
-                    {state.subtitle_draft.trim() ? (
+                    {subtitleDraft.trim() ? (
                       <ArtifactCard title="字幕草稿" defaultOpen>
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
-                          {state.subtitle_draft.trim()}
+                          {subtitleDraft.trim()}
                         </pre>
                       </ArtifactCard>
                     ) : null}
-                    {state.editing_plan.trim() ? (
+                    {editingPlan.trim() ? (
                       <ArtifactCard title="剪辑方案">
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
-                          {state.editing_plan.trim()}
+                          {editingPlan.trim()}
                         </pre>
                       </ArtifactCard>
                     ) : null}
-                    {state.english_title.trim() ? (
+                    {englishTitle.trim() ? (
                       <ArtifactCard title="英文标题">
                         <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
-                          {state.english_title.trim()}
+                          {englishTitle.trim()}
                         </p>
                       </ArtifactCard>
                     ) : null}
-                    {state.tags.length ? (
+                    {tags.length ? (
                       <ArtifactCard title="标签">
                         <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
-                          {state.tags.join(', ')}
+                          {tags.join(', ')}
                         </p>
                       </ArtifactCard>
                     ) : null}
-                    {state.video_summary.trim() ? (
+                    {videoSummary.trim() ? (
                       <ArtifactCard title="视频摘要">
                         <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
-                          {state.video_summary.trim()}
+                          {videoSummary.trim()}
                         </pre>
                       </ArtifactCard>
                     ) : null}
-                    {state.frame_analyses.length ? (
+                    {frameAnalyses.length ? (
                       <ArtifactCard title="关键帧理解">
                         <div className="mt-1 space-y-2">
-                          {state.frame_analyses.slice(0, 6).map((item, index) => (
+                          {frameAnalyses.slice(0, 6).map((item, index) => (
                             <p
                               key={`${index}-${item.slice(0, 12)}`}
                               className="whitespace-pre-wrap break-words text-[12px] text-slate-300"

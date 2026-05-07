@@ -19,6 +19,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Path, Request, UploadF
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from app.auth.access import CurrentAccessIdentity
 from app.core.config import settings
 from app.core.utils import ensure_directory
 from app.models.caption import utcnow
@@ -826,7 +827,10 @@ async def create_b2_upload_url(request: B2UploadUrlRequest) -> B2UploadUrlRespon
 
 
 @router.post("/assistant/session")
-async def create_caption_session(request: CaptionSessionCreateRequest):
+async def create_caption_session(
+    request: CaptionSessionCreateRequest,
+    current_user: CurrentAccessIdentity,
+):
     """
     创建字幕与剪辑助手会话，并异步开始处理。
     """
@@ -862,22 +866,58 @@ async def create_caption_session(request: CaptionSessionCreateRequest):
         platform=request.platform,
         product_manual=request.product_manual,
         user_prompt=request.prompt,
+        owner_user_id=current_user.access_user_id,
+        owner_email=current_user.email,
+        owner_name=current_user.name,
         analysis_mode=request.analysis_mode,
     )
 
 
+@router.get("/assistant/sessions")
+async def list_caption_sessions(current_user: CurrentAccessIdentity):
+    return caption_assistant.list_sessions(
+        current_user.access_user_id,
+        current_user.email,
+    )
+
+
+@router.get("/assistant/debug/identity")
+async def debug_access_identity(current_user: CurrentAccessIdentity):
+    visible_sessions = caption_assistant.list_sessions(
+        current_user.access_user_id,
+        current_user.email,
+    )
+    return {
+        "cloudflare_access_enabled": settings.cloudflare_access_enabled,
+        "access_user_id": current_user.access_user_id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "visible_session_count": len(visible_sessions),
+        "visible_session_ids": [session["session_id"] for session in visible_sessions[:10]],
+    }
+
+
 @router.get("/assistant/session/{session_id}/events")
-async def stream_caption_session_events(session_id: str, request: Request):
+async def stream_caption_session_events(
+    session_id: str,
+    request: Request,
+    current_user: CurrentAccessIdentity,
+):
     """
     SSE 推送会话进度与结果。
     """
     try:
-        caption_assistant.get_session(session_id)
+        caption_assistant.get_session(session_id, current_user.access_user_id)
     except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     async def event_generator():
-        async for message in caption_assistant.stream_session_events(session_id):
+        async for message in caption_assistant.stream_session_events(
+            session_id,
+            current_user.access_user_id,
+        ):
             if await request.is_disconnected():
                 break
             yield _format_sse(message["event"], message["data"])
@@ -894,33 +934,50 @@ async def stream_caption_session_events(session_id: str, request: Request):
 
 
 @router.post("/assistant/session/{session_id}/message")
-async def continue_caption_session(session_id: str, request: CaptionFollowUpRequest):
+async def continue_caption_session(
+    session_id: str,
+    request: CaptionFollowUpRequest,
+    current_user: CurrentAccessIdentity,
+):
     """
     继续字幕与剪辑助手会话，并异步开始处理。
     """
     try:
-        return await caption_assistant.continue_session(session_id, request.prompt)
+        return await caption_assistant.continue_session(
+            session_id,
+            current_user.access_user_id,
+            request.prompt,
+        )
     except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 @router.get("/assistant/session/{session_id}")
-async def get_caption_session(session_id: str):
+async def get_caption_session(session_id: str, current_user: CurrentAccessIdentity):
     """
     获取字幕与剪辑助手会话详情
     """
     try:
-        return caption_assistant.get_session(session_id)
+        return caption_assistant.get_session(session_id, current_user.access_user_id)
     except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/assistant/session/{session_id}/exported-video")
-async def download_exported_video(session_id: str):
+async def download_exported_video(session_id: str, current_user: CurrentAccessIdentity):
     try:
-        video_path = caption_assistant.get_exported_video_path(session_id)
+        video_path = caption_assistant.get_exported_video_path(
+            session_id,
+            current_user.access_user_id,
+        )
     except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"exported video not found: {exc}") from exc

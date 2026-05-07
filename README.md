@@ -151,10 +151,27 @@ Important configuration areas:
 
 - model credentials such as `OPENAI_API_KEY`, `GLM_API_KEY`, `DEEPSEEK_API_KEY`
 - model routing such as `MULTIMODAL_PROVIDER`, `MULTIMODAL_MODEL`
+- Access and local session persistence such as `CLOUDFLARE_ACCESS_ENABLED` and `SESSION_STORE_DIR`
 - media controls such as `KEYFRAME_INTERVAL_SECONDS`, `MAX_KEYFRAMES`
 - export controls such as `EXPORT_DIR`, `FFMPEG_EXECUTION_TIMEOUT_SECONDS`
 
 The project reads environment variables from `.env`.
+
+### Cloudflare Access Session Isolation
+
+The backend now supports per-user session ownership and local session persistence.
+
+- Set `CLOUDFLARE_ACCESS_ENABLED=true` to require Cloudflare Access identity on session APIs.
+- Session data is persisted under `SESSION_STORE_DIR` and survives backend restarts.
+- When `CLOUDFLARE_ACCESS_ENABLED=false`, the backend falls back to a configurable local development identity:
+  - `DEV_ACCESS_USER_ID`
+  - `DEV_ACCESS_USER_EMAIL`
+  - `DEV_ACCESS_USER_NAME`
+
+Current implementation note:
+
+- The backend extracts identity from `Cf-Access-Jwt-Assertion` and Access user headers, and uses that identity to isolate sessions.
+- This mode assumes your origin is only reachable through Cloudflare Access or another trusted proxy path. If your origin is publicly reachable, you should additionally lock down origin access before treating these headers as authoritative.
 
 ## Why This Design
 

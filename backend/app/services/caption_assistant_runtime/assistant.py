@@ -71,11 +71,17 @@ class CaptionConversationAssistant:
         platform: str,
         product_manual: str | None,
         user_prompt: str,
+        owner_user_id: str,
+        owner_email: str = "",
+        owner_name: str = "",
         analysis_mode: AnalysisMode = "keyframe",
     ) -> Dict[str, Any]:
         turn = AgentTurn(turn_id=str(uuid4()), user_prompt=user_prompt)
         session = CaptionSession(
             session_id=str(uuid4()),
+            owner_user_id=owner_user_id,
+            owner_email=owner_email,
+            owner_name=owner_name,
             video_path=video_path,
             platform=platform,
             product_manual=product_manual or "",
@@ -92,8 +98,8 @@ class CaptionConversationAssistant:
         asyncio.create_task(self.run_turn(session.session_id, turn.turn_id, user_prompt))
         return self.serialize(session)
 
-    async def continue_session(self, session_id: str, user_prompt: str) -> Dict[str, Any]:
-        session = self.store.get(session_id)
+    async def continue_session(self, session_id: str, owner_user_id: str, user_prompt: str) -> Dict[str, Any]:
+        session = self.get_session_model(session_id, owner_user_id)
         if session.status == "processing":
             raise ValueError("session is still processing")
 
@@ -109,16 +115,16 @@ class CaptionConversationAssistant:
         asyncio.create_task(self.run_turn(session_id, turn.turn_id, user_prompt))
         return self.serialize(session)
 
-    def get_session(self, session_id: str) -> Dict[str, Any]:
-        return self.serialize(self.store.get(session_id))
+    def get_session(self, session_id: str, owner_user_id: str) -> Dict[str, Any]:
+        return self.serialize(self.get_session_model(session_id, owner_user_id))
 
     async def wait_for_completion(self, session_id: str) -> Dict[str, Any]:
         event = self.ensure_completion_event(session_id)
         await event.wait()
-        return self.get_session(session_id)
+        return self.serialize(self.store.get(session_id))
 
-    async def stream_session_events(self, session_id: str) -> AsyncIterator[Dict[str, Any]]:
-        session = self.store.get(session_id)
+    async def stream_session_events(self, session_id: str, owner_user_id: str) -> AsyncIterator[Dict[str, Any]]:
+        session = self.get_session_model(session_id, owner_user_id)
         queue = self.events.subscribe(session_id)
         try:
             yield {"event": "snapshot", "data": self.serialize(session)}
@@ -131,8 +137,8 @@ class CaptionConversationAssistant:
         finally:
             self.events.unsubscribe(session_id, queue)
 
-    def get_exported_video_path(self, session_id: str) -> str:
-        session = self.store.get(session_id)
+    def get_exported_video_path(self, session_id: str, owner_user_id: str) -> str:
+        session = self.get_session_model(session_id, owner_user_id)
         edited_video = session.global_editing_state.edited_video
         if not edited_video.storage_path:
             raise KeyError(f"session '{session_id}' has no exported video")
@@ -142,6 +148,18 @@ class CaptionConversationAssistant:
 
     def serialize(self, session: CaptionSession) -> Dict[str, Any]:
         return self.serialization_service.serialize(session)
+
+    def list_sessions(self, owner_user_id: str, owner_email: str = "") -> List[Dict[str, Any]]:
+        return [
+            self.serialize(session)
+            for session in self.store.list_by_user(owner_user_id, owner_email)
+        ]
+
+    def get_session_model(self, session_id: str, owner_user_id: str) -> CaptionSession:
+        session = self.store.get(session_id)
+        if session.owner_user_id != owner_user_id:
+            raise PermissionError(f"session '{session_id}' not found")
+        return session
 
     def ensure_session_primitives(self, session_id: str) -> None:
         with self._meta_lock:

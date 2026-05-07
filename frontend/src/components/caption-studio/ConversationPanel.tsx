@@ -38,6 +38,7 @@ interface ConversationPanelProps {
   sellingPointsOpen: boolean;
   setSellingPointsOpen: React.Dispatch<React.SetStateAction<boolean>>;
   error: string;
+  isSubmitting: boolean;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -69,6 +70,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   sellingPointsOpen,
   setSellingPointsOpen,
   error,
+  isSubmitting,
 }) => (
   <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
     <div className="flex items-center gap-2 border-b border-slate-800 bg-[#0f0f0f] px-4 py-3 lg:hidden">
@@ -166,6 +168,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
           onSellingPointsToggle={() => setSellingPointsOpen((current) => !current)}
           toolsDisabled={composerMode !== 'initial' || isRunning}
           placeholder="有问题，尽管问"
+          isSubmitting={isSubmitting}
         />
 
         {error ? (

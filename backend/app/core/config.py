@@ -32,10 +32,17 @@ class Settings(BaseSettings):
     # Server Config
     host: str = "0.0.0.0"
     port: int = 8000
-    
+
+    # Cloudflare Access
+    cloudflare_access_enabled: bool = False
+    dev_access_user_id: str = "local-dev-user"
+    dev_access_user_email: str = "local-dev@example.com"
+    dev_access_user_name: str = "Local Dev"
+
     # File Upload Config
     upload_dir: str = "./uploads"
     export_dir: str = "./exports"
+    session_store_dir: str = "./data/caption_sessions"
     max_upload_size: int = 1024 * 1024 * 1024
     upload_chunk_size: int = 512 * 1024
     ffmpeg_execution_timeout_seconds: int = 600
@@ -67,3 +74,5 @@ if not os.path.exists(settings.upload_dir):
     os.makedirs(settings.upload_dir)
 if not os.path.exists(settings.export_dir):
     os.makedirs(settings.export_dir)
+if not os.path.exists(settings.session_store_dir):
+    os.makedirs(settings.session_store_dir)

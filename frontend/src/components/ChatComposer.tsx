@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  Loader2,
   Mic,
   Plus,
   Paperclip,
@@ -47,6 +48,7 @@ interface ChatComposerProps {
   onSellingPointsToggle: () => void;
   toolsDisabled?: boolean;
   modeLabel?: string;
+  isSubmitting?: boolean;
 }
 
 const MAX_TEXTAREA_HEIGHT = 160;
@@ -168,6 +170,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
   onSellingPointsToggle,
   toolsDisabled = false,
   modeLabel = 'Instant',
+  isSubmitting = false,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const platformMenuRef = useRef<HTMLDivElement | null>(null);
@@ -503,16 +506,20 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={disabled || !hasText}
+            disabled={disabled || (!hasText && !isSubmitting)}
             aria-label="发送"
             className={cn(
               'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition',
-              hasText && !disabled
+              isSubmitting || (hasText && !disabled)
                 ? 'bg-white text-black hover:bg-slate-100'
                 : 'bg-[#3a3a3a] text-[#777777]',
             )}
           >
-            <ArrowUp className="h-4.5 w-4.5" />
+            {isSubmitting ? (
+              <Loader2 className="h-4.5 w-4.5 animate-spin" />
+            ) : (
+              <ArrowUp className="h-4.5 w-4.5" />
+            )}
           </button>
         </div>
       </div>

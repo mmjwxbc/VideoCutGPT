@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Literal
+from types import UnionType
+from typing import Any, Dict, List, Literal, Union, get_args, get_origin, get_type_hints
 
 
 AnalysisMode = Literal["keyframe", "every_second"]
@@ -175,9 +176,12 @@ class AgentTurn:
 @dataclass
 class CaptionSession:
     session_id: str
+    owner_user_id: str
     video_path: str
     platform: str
     product_manual: str
+    owner_email: str = ""
+    owner_name: str = ""
     analysis_mode: AnalysisMode = "keyframe"
     turns: List[AgentTurn] = field(default_factory=list)
     global_editing_state: GlobalEditingState = field(default_factory=GlobalEditingState)
@@ -195,6 +199,9 @@ def serialize_session(session: CaptionSession) -> Dict[str, Any]:
         editing_state["edited_video"].pop("storage_path", None)
     return {
         "session_id": session.session_id,
+        "owner_user_id": session.owner_user_id,
+        "owner_email": session.owner_email,
+        "owner_name": session.owner_name,
         "platform": session.platform,
         "analysis_mode": session.analysis_mode,
         "turns": [asdict(turn) for turn in session.turns],
@@ -206,3 +213,51 @@ def serialize_session(session: CaptionSession) -> Dict[str, Any]:
         "created_at": session.created_at,
         "updated_at": session.updated_at,
     }
+
+
+def dump_session_record(session: CaptionSession) -> Dict[str, Any]:
+    return asdict(session)
+
+
+def load_session_record(payload: Dict[str, Any]) -> CaptionSession:
+    return _hydrate_dataclass(CaptionSession, payload)
+
+
+def _hydrate_dataclass(model_type: type[Any], payload: Dict[str, Any]) -> Any:
+    type_hints = get_type_hints(model_type)
+    kwargs: Dict[str, Any] = {}
+    for model_field in fields(model_type):
+        if model_field.name not in payload:
+            continue
+        resolved_type = type_hints.get(model_field.name, model_field.type)
+        kwargs[model_field.name] = _hydrate_value(resolved_type, payload[model_field.name])
+    return model_type(**kwargs)
+
+
+def _hydrate_value(field_type: Any, value: Any) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(field_type, type) and is_dataclass(field_type):
+        return _hydrate_dataclass(field_type, value)
+
+    origin = get_origin(field_type)
+    if origin in (list, List):
+        (item_type,) = get_args(field_type) or (Any,)
+        return [_hydrate_value(item_type, item) for item in value]
+    if origin in (dict, Dict):
+        key_type, value_type = get_args(field_type) or (Any, Any)
+        return {
+            _hydrate_value(key_type, item_key): _hydrate_value(value_type, item_value)
+            for item_key, item_value in value.items()
+        }
+    if origin in (Union, UnionType):
+        candidate_types = [arg for arg in get_args(field_type) if arg is not type(None)]
+        for candidate_type in candidate_types:
+            if isinstance(candidate_type, type) and is_dataclass(candidate_type):
+                return _hydrate_value(candidate_type, value)
+            candidate_origin = get_origin(candidate_type)
+            if candidate_origin in (list, List, dict, Dict):
+                return _hydrate_value(candidate_type, value)
+        return value
+    return value

@@ -9,6 +9,7 @@ import {
   continueCaptionAssistantSession,
   createCaptionAssistantSession,
   getCaptionAssistantSession,
+  listCaptionAssistantSessions,
   uploadVideoToB2,
   uploadVideoInChunks,
 } from '../api/api';
@@ -23,6 +24,7 @@ const PLATFORM_OPTIONS = [
 ];
 
 const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+const ACTIVE_SESSION_STORAGE_KEY = 'caption-active-session-id';
 
 type UploadPreviewStatus = 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
 
@@ -55,6 +57,21 @@ const getAxiosErrorMessage = (error: unknown, fallback: string) => {
   return error.message || fallback;
 };
 
+const isValidCaptionSession = (value: unknown): value is CaptionAssistantSession => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<CaptionAssistantSession>;
+  return (
+    typeof candidate.session_id === 'string' &&
+    typeof candidate.platform === 'string' &&
+    typeof candidate.analysis_mode === 'string' &&
+    Array.isArray(candidate.turns) &&
+    !!candidate.global_editing_state &&
+    typeof candidate.global_editing_state === 'object'
+  );
+};
+
 const isLoopbackHostname = (hostname: string) =>
   hostname === 'localhost' ||
   hostname === '::1' ||
@@ -70,7 +87,7 @@ const CaptionGenerator: React.FC = () => {
   const [productManual, setProductManual] = useState<string>('');
   const [sellingPointsOpen, setSellingPointsOpen] = useState<boolean>(false);
   const [draftPrompt, setDraftPrompt] = useState<string>(
-    '请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。',
+    '请先生成适合投放的英文字幕初稿，并输出20s镜头级剪辑方案。最后剪辑导出视频',
   );
   const [session, setSession] = useState<CaptionAssistantSession | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -90,6 +107,7 @@ const CaptionGenerator: React.FC = () => {
   const eventSourceRef = useRef<EventSource | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const sessionRef = useRef<CaptionAssistantSession | null>(null);
+  const sessionEffectTokenRef = useRef(0);
 
   const turns = session?.turns ?? [];
   const workflowRows = useMemo(
@@ -100,6 +118,7 @@ const CaptionGenerator: React.FC = () => {
   const isInitialUploadInFlight =
     composerMode === 'initial' && pendingUserPrompt !== null && session === null;
   const submitDisabled = isRunning || isInitialUploadInFlight;
+  const isSubmitting = loading || pendingUserPrompt !== null;
   const useLegacyLocalUpload = useMemo(() => {
     if (typeof window === 'undefined') {
       return false;
@@ -125,6 +144,17 @@ const CaptionGenerator: React.FC = () => {
     setLoading(nextSession.status === 'processing');
     setError('');
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (!session?.session_id) {
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, session.session_id);
+  }, [session?.session_id]);
 
   const reconcileTerminalSession = useCallback(async (sessionId: string) => {
     try {
@@ -166,12 +196,51 @@ const CaptionGenerator: React.FC = () => {
   }, [session, upsertSessionHistory]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadPersistedSessions = async () => {
+      try {
+        const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSession);
+        if (cancelled || !sessions.length) {
+          return;
+        }
+        const historyItems = sessions.map((item) => buildSessionHistoryItem(item));
+        setSessionHistory(historyItems);
+
+        if (typeof window === 'undefined') {
+          return;
+        }
+        const preferredSessionId = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+        if (!preferredSessionId) {
+          return;
+        }
+        const nextSession = sessions.find((item) => item.session_id === preferredSessionId);
+        if (!nextSession || cancelled) {
+          return;
+        }
+        applyAuthoritativeSession(nextSession);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Error listing caption sessions:', err);
+        }
+      }
+    };
+
+    void loadPersistedSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyAuthoritativeSession]);
+
+  useEffect(() => {
     if (!session?.session_id) {
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
       return;
     }
 
+    sessionEffectTokenRef.current += 1;
+    const effectToken = sessionEffectTokenRef.current;
     eventSourceRef.current?.close();
     const source = new EventSource(captionSessionEventsUrl(session.session_id));
     eventSourceRef.current = source;
@@ -206,6 +275,9 @@ const CaptionGenerator: React.FC = () => {
     };
 
     const handleSnapshot = (raw: MessageEvent<string>) => {
+      if (sessionEffectTokenRef.current !== effectToken) {
+        return;
+      }
       resetInactivityTimer();
       setSseTimedOut(false);
       const nextSession = JSON.parse(raw.data) as CaptionAssistantSession;
@@ -213,6 +285,9 @@ const CaptionGenerator: React.FC = () => {
     };
 
     const handleTurnEvent = (raw: MessageEvent<string>) => {
+      if (sessionEffectTokenRef.current !== effectToken) {
+        return;
+      }
       resetInactivityTimer();
       setSseTimedOut(false);
       const payload = JSON.parse(raw.data) as {
@@ -243,6 +318,9 @@ const CaptionGenerator: React.FC = () => {
     };
 
     const handleTurnTerminal = (raw: MessageEvent<string>) => {
+      if (sessionEffectTokenRef.current !== effectToken) {
+        return;
+      }
       resetInactivityTimer();
       setSseTimedOut(false);
       const nextSession = JSON.parse(raw.data) as CaptionAssistantSession;
@@ -254,10 +332,16 @@ const CaptionGenerator: React.FC = () => {
     source.addEventListener('turn_completed', handleTurnTerminal as EventListener);
     source.addEventListener('turn_error', handleTurnTerminal as EventListener);
     source.addEventListener('ping', (() => {
+      if (sessionEffectTokenRef.current !== effectToken) {
+        return;
+      }
       resetInactivityTimer();
       setSseTimedOut(false);
     }) as EventListener);
     source.onerror = async () => {
+      if (sessionEffectTokenRef.current !== effectToken) {
+        return;
+      }
       console.error('Caption SSE connection interrupted.');
       clearInactivityTimer();
       await reconcileTerminalSession(session.session_id);
@@ -308,9 +392,13 @@ const CaptionGenerator: React.FC = () => {
   };
 
   const resetSession = () => {
+    sessionEffectTokenRef.current += 1;
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     sessionRef.current = null;
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    }
     setPendingUserPrompt(null);
     setSession(null);
     setVideos([]);
@@ -320,7 +408,7 @@ const CaptionGenerator: React.FC = () => {
     setProductManual('');
     setAnalysisMode('keyframe');
     setSellingPointsOpen(false);
-    setDraftPrompt('请先生成适合投放的字幕初稿，并输出镜头级剪辑方案。');
+    setDraftPrompt('请先生成适合投放的英文字幕初稿，并输出20s镜头级剪辑方案。最后剪辑导出视频');
     setComposerMode('initial');
     setLoading(false);
     setSseTimedOut(false);
@@ -334,6 +422,8 @@ const CaptionGenerator: React.FC = () => {
     try {
       const nextSession = await getCaptionAssistantSession(sessionId);
       startTransition(() => {
+        setPendingUserPrompt(null);
+        setDraftPrompt('');
         setAnalysisMode(nextSession.analysis_mode);
         setSession(nextSession);
         setComposerMode('followup');
@@ -422,6 +512,13 @@ const CaptionGenerator: React.FC = () => {
         useLegacyLocalUpload ? '准备分片上传视频...' : '准备直传视频到 B2...',
       );
       setPendingUserPrompt(normalizedPrompt);
+      setUploadProgress((current) =>
+        current.map((item) => ({
+          ...item,
+          progress: 0,
+          status: 'uploading',
+        })),
+      );
 
       try {
         const uploadedFilePaths: string[] = [];
@@ -439,9 +536,9 @@ const CaptionGenerator: React.FC = () => {
                   current.map((item, itemIndex) =>
                     itemIndex === index
                       ? {
-                          progress,
-                          status: progress >= 1 ? 'processing' : 'uploading',
-                        }
+                        progress,
+                        status: progress >= 1 ? 'processing' : 'uploading',
+                      }
                       : item,
                   ),
                 );
@@ -457,14 +554,14 @@ const CaptionGenerator: React.FC = () => {
                   current.map((item, itemIndex) =>
                     itemIndex === index
                       ? {
-                          progress: task.status === 'done' ? 1 : Math.max(item.progress, task.progress),
-                          status:
-                            task.status === 'failed'
-                              ? 'failed'
-                              : task.status === 'done'
-                                ? 'done'
-                                : 'processing',
-                        }
+                        progress: task.status === 'done' ? 1 : Math.max(item.progress, task.progress),
+                        status:
+                          task.status === 'failed'
+                            ? 'failed'
+                            : task.status === 'done'
+                              ? 'done'
+                              : 'processing',
+                      }
                       : item,
                   ),
                 );
@@ -481,9 +578,9 @@ const CaptionGenerator: React.FC = () => {
                   current.map((item, itemIndex) =>
                     itemIndex === index
                       ? {
-                          progress,
-                          status: progress >= 1 ? 'done' : 'uploading',
-                        }
+                        progress,
+                        status: progress >= 1 ? 'done' : 'uploading',
+                      }
                       : item,
                   ),
                 );
@@ -496,9 +593,9 @@ const CaptionGenerator: React.FC = () => {
               current.map((item, itemIndex) =>
                 itemIndex === index
                   ? {
-                      progress: 1,
-                      status: 'done',
-                    }
+                    progress: 1,
+                    status: 'done',
+                  }
                   : item,
               ),
             );
@@ -596,11 +693,10 @@ const CaptionGenerator: React.FC = () => {
   return (
     <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
       <div
-        className={`grid h-full min-h-0 ${
-          historySidebarCollapsed
+        className={`grid h-full min-h-0 ${historySidebarCollapsed
             ? 'lg:grid-cols-[72px_minmax(0,1fr)_368px]'
             : 'lg:grid-cols-[272px_minmax(0,1fr)_368px]'
-        }`}
+          }`}
       >
         <HistorySidebar
           collapsed={historySidebarCollapsed}
@@ -645,6 +741,7 @@ const CaptionGenerator: React.FC = () => {
               ? 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。'
               : error
           }
+          isSubmitting={isSubmitting}
         />
 
         <WorkspaceSidebar
