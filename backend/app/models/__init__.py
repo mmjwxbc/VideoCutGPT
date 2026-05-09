@@ -15,6 +15,7 @@ from .caption import (
     TurnTaskBoard,
     WorkflowArtifactState,
     serialize_session,
+    serialize_session_summary,
     utcnow,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "TurnTaskBoard",
     "WorkflowArtifactState",
     "serialize_session",
+    "serialize_session_summary",
     "utcnow",
 ]

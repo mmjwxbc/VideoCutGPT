@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AnalysisMode, CaptionAssistantSession } from '../types';
+import { AnalysisMode, CaptionAssistantSession, CaptionAssistantSessionSummary } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -389,7 +389,7 @@ export const getCaptionAssistantSession = async (
   return response.data;
 };
 
-export const listCaptionAssistantSessions = async (): Promise<CaptionAssistantSession[]> => {
+export const listCaptionAssistantSessions = async (): Promise<CaptionAssistantSessionSummary[]> => {
   const response = await api.get('/caption/assistant/sessions');
   return response.data;
 };

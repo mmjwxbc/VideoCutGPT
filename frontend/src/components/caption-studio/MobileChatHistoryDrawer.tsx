@@ -6,6 +6,7 @@ import { SessionListItem, formatTimestamp } from './shared';
 interface MobileChatHistoryDrawerProps {
   sessionHistory: SessionListItem[];
   activeSessionId?: string;
+  loadingSessionId?: string | null;
   onOpenSession: (sessionId: string) => void | Promise<void>;
   onReset: () => void;
   onCloseDrawer: () => void;
@@ -21,6 +22,7 @@ const STATUS_MAP: Record<string, { label: string; className: string }> = {
 const MobileChatHistoryDrawer: React.FC<MobileChatHistoryDrawerProps> = ({
   sessionHistory,
   activeSessionId,
+  loadingSessionId,
   onOpenSession,
   onReset,
   onCloseDrawer,
@@ -80,25 +82,32 @@ const MobileChatHistoryDrawer: React.FC<MobileChatHistoryDrawerProps> = ({
           <div className="space-y-2">
             {filteredHistory.map((item) => {
               const isActive = activeSessionId === item.session_id;
-              const statusInfo = STATUS_MAP['completed'];
+              const isLoading = loadingSessionId === item.session_id;
+              const statusInfo = STATUS_MAP[item.status] ?? STATUS_MAP.idle;
               return (
                 <button
                   key={item.session_id}
                   type="button"
                   onClick={() => handleSessionClick(item.session_id)}
+                  disabled={isLoading}
                   className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
                     isActive
                       ? 'border-sky-500/40 bg-sky-500/10 shadow-sm'
                       : 'border-slate-800 bg-[#171717] hover:border-slate-700 hover:bg-[#1b1b1b]'
-                  }`}
+                  } ${isLoading ? 'cursor-wait opacity-80' : ''}`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <p className="truncate text-[13px] font-medium text-slate-100">
                       {item.title}
                     </p>
-                    <span className="shrink-0 text-[10px] text-slate-500">
-                      {formatTimestamp(item.updated_at)}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {isLoading ? (
+                        <span className="text-[10px] text-sky-300">加载中...</span>
+                      ) : null}
+                      <span className="text-[10px] text-slate-500">
+                        {formatTimestamp(item.updated_at)}
+                      </span>
+                    </div>
                   </div>
                   <p className="mt-1.5 line-clamp-2 text-[11px] leading-5 text-slate-400">
                     {item.subtitle}

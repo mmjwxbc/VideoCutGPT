@@ -15,6 +15,7 @@ interface MobileDrawerTabsProps {
   onCloseDrawer: () => void;
   sessionHistory: SessionListItem[];
   activeSessionId?: string;
+  loadingSessionId?: string | null;
   onOpenSession: (sessionId: string) => void | Promise<void>;
   onReset: () => void;
   session: CaptionAssistantSession | null;
@@ -41,6 +42,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
   onCloseDrawer,
   sessionHistory,
   activeSessionId,
+  loadingSessionId,
   onOpenSession,
   onReset,
   session,
@@ -155,6 +157,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
                 <MobileChatHistoryDrawer
                   sessionHistory={sessionHistory}
                   activeSessionId={activeSessionId}
+                  loadingSessionId={loadingSessionId}
                   onOpenSession={onOpenSession}
                   onReset={onReset}
                   onCloseDrawer={onCloseDrawer}

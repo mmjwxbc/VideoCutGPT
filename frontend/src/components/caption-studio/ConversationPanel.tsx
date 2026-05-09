@@ -11,6 +11,8 @@ interface ConversationPanelProps {
   onCloseDrawer: () => void;
   sessionHistory: SessionListItem[];
   activeSessionId?: string;
+  loadingSessionId?: string | null;
+  isSessionLoading: boolean;
   onOpenSession: (sessionId: string) => void | Promise<void>;
   onReset: () => void;
   threadRef: React.RefObject<HTMLDivElement>;
@@ -57,6 +59,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onCloseDrawer,
   sessionHistory,
   activeSessionId,
+  loadingSessionId,
+  isSessionLoading,
   onOpenSession,
   onReset,
   threadRef,
@@ -99,6 +103,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
       onCloseDrawer={onCloseDrawer}
       sessionHistory={sessionHistory}
       activeSessionId={activeSessionId}
+      loadingSessionId={loadingSessionId}
       onOpenSession={onOpenSession}
       onReset={onReset}
       session={session}
@@ -113,7 +118,18 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#090909] px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex min-h-full flex-col gap-3 pb-6">
-          {!session && !pendingUserPrompt ? (
+          {isSessionLoading ? (
+            <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                  Loading Session
+                </p>
+                <p className="mt-2 text-[12px] leading-5 text-slate-300">
+                  正在加载会话内容，请稍候。
+                </p>
+              </div>
+            </div>
+          ) : !session && !pendingUserPrompt ? (
             <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
               <div className="max-w-lg">
                 <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">

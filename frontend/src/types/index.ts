@@ -93,3 +93,14 @@ export interface CaptionAssistantSession {
   created_at: string;
   updated_at: string;
 }
+
+export interface CaptionAssistantSessionSummary {
+  session_id: string;
+  platform: string;
+  analysis_mode: AnalysisMode;
+  status: 'idle' | 'processing' | 'completed' | 'error';
+  title: string;
+  subtitle: string;
+  created_at: string;
+  updated_at: string;
+}

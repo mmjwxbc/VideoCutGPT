@@ -215,6 +215,33 @@ def serialize_session(session: CaptionSession) -> Dict[str, Any]:
     }
 
 
+def serialize_session_summary(session: CaptionSession) -> Dict[str, Any]:
+    first_turn = session.turns[0] if session.turns else None
+    last_turn = session.turns[-1] if session.turns else None
+    title_source = (
+        (first_turn.user_prompt if first_turn else "")
+        or session.global_editing_state.request_summary
+        or "未命名会话"
+    )
+    subtitle_source = (
+        (last_turn.final_text if last_turn else "")
+        or ("当前轮次执行中" if last_turn and last_turn.status == "running" else "")
+        or session.global_editing_state.english_title
+        or session.global_editing_state.video_summary
+        or "等待处理"
+    )
+    return {
+        "session_id": session.session_id,
+        "platform": session.platform,
+        "analysis_mode": session.analysis_mode,
+        "status": session.status,
+        "title": title_source.strip()[:28] or "未命名会话",
+        "subtitle": subtitle_source.strip()[:42] or "等待处理",
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    }
+
+
 def dump_session_record(session: CaptionSession) -> Dict[str, Any]:
     return asdict(session)
 

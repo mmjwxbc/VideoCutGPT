@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from app.agent.runtime import LightPlanningReActRuntime, OpenAIToolCallingRuntime, ReActStep, ToolRegistry
 from app.core.config import settings
-from app.models import AgentTurn, AnalysisMode, CaptionSession, EditedVideoArtifact, GlobalEditingState, TurnEventItem, TurnTaskBoard, utcnow
+from app.models import AgentTurn, AnalysisMode, CaptionSession, EditedVideoArtifact, GlobalEditingState, TurnEventItem, TurnTaskBoard, serialize_session_summary, utcnow
 from app.services.caption_assistant_runtime.broker import CaptionEventBroker
 from app.services.caption_assistant_runtime.clip_derivation import ClipDerivationService
 from app.services.caption_assistant_runtime.completion import CompletionService
@@ -151,7 +151,7 @@ class CaptionConversationAssistant:
 
     def list_sessions(self, owner_user_id: str, owner_email: str = "") -> List[Dict[str, Any]]:
         return [
-            self.serialize(session)
+            serialize_session_summary(session)
             for session in self.store.list_by_user(owner_user_id, owner_email)
         ]
 

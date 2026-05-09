@@ -4,6 +4,7 @@ import { Bot, ChevronDown, User, Wrench } from 'lucide-react';
 import {
   AgentTurn,
   CaptionAssistantSession,
+  CaptionAssistantSessionSummary,
   EditingWorkflowState,
   TurnEventItem,
   WorkflowArtifactState,
@@ -13,6 +14,7 @@ export interface SessionListItem {
   session_id: string;
   title: string;
   subtitle: string;
+  status: 'idle' | 'processing' | 'completed' | 'error';
   updated_at: string;
 }
 
@@ -79,9 +81,20 @@ export const buildSessionHistoryItem = (
     session_id: nextSession.session_id,
     title: titleSource.trim().slice(0, 28) || '未命名会话',
     subtitle: subtitleSource.trim().slice(0, 42) || '等待处理',
+    status: nextSession.status,
     updated_at: nextSession.updated_at,
   };
 };
+
+export const buildSessionHistoryItemFromSummary = (
+  summary: CaptionAssistantSessionSummary,
+): SessionListItem => ({
+  session_id: summary.session_id,
+  title: summary.title.trim().slice(0, 28) || '未命名会话',
+  subtitle: summary.subtitle.trim().slice(0, 42) || '等待处理',
+  status: summary.status,
+  updated_at: summary.updated_at,
+});
 
 export const getWorkflowRows = (
   workflowState: EditingWorkflowState | null | undefined,

@@ -9,6 +9,7 @@ interface HistorySidebarProps {
   collapsed: boolean;
   sessionHistory: SessionListItem[];
   activeSessionId?: string;
+  loadingSessionId?: string | null;
   onExpand: () => void;
   onCollapse: () => void;
   onReset: () => void;
@@ -19,6 +20,7 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({
   collapsed,
   sessionHistory,
   activeSessionId,
+  loadingSessionId,
   onExpand,
   onCollapse,
   onReset,
@@ -87,24 +89,31 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({
               {sessionHistory.length ? (
                 sessionHistory.map((item) => {
                   const isActive = activeSessionId === item.session_id;
+                  const isLoading = loadingSessionId === item.session_id;
                   return (
                     <button
                       key={item.session_id}
                       type="button"
                       onClick={() => void onOpenSession(item.session_id)}
+                      disabled={isLoading}
                       className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
                         isActive
                           ? 'border-sky-500/40 bg-sky-500/10 shadow-sm'
                           : 'border-slate-800 bg-[#171717] hover:border-slate-700 hover:bg-[#1b1b1b]'
-                      }`}
+                      } ${isLoading ? 'cursor-wait opacity-80' : ''}`}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <p className="truncate text-sm font-medium text-slate-100">
                           {item.title}
                         </p>
-                        <span className="shrink-0 text-[11px] text-slate-500">
-                          {formatTimestamp(item.updated_at)}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {isLoading ? (
+                            <span className="text-[10px] text-sky-300">加载中...</span>
+                          ) : null}
+                          <span className="text-[11px] text-slate-500">
+                            {formatTimestamp(item.updated_at)}
+                          </span>
+                        </div>
                       </div>
                       <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">
                         {item.subtitle}

@@ -17,8 +17,8 @@ import {
   uploadVideoToB2,
   uploadVideoInChunks,
 } from '../api/api';
-import { SessionListItem, buildSessionHistoryItem, getWorkflowRows } from '../components/caption-studio/shared';
-import { AnalysisMode, CaptionAssistantSession, TurnEventItem } from '../types';
+import { SessionListItem, buildSessionHistoryItem, buildSessionHistoryItemFromSummary, getWorkflowRows } from '../components/caption-studio/shared';
+import { AnalysisMode, CaptionAssistantSession, CaptionAssistantSessionSummary, TurnEventItem } from '../types';
 
 const PLATFORM_OPTIONS = [
   { value: 'tiktok', label: 'TikTok', iconClassName: 'bg-slate-900' },
@@ -63,18 +63,18 @@ const getAxiosErrorMessage = (error: unknown, fallback: string) => {
   return error.message || fallback;
 };
 
-const isValidCaptionSession = (value: unknown): value is CaptionAssistantSession => {
+const isValidCaptionSessionSummary = (value: unknown): value is CaptionAssistantSessionSummary => {
   if (!value || typeof value !== 'object') {
     return false;
   }
-  const candidate = value as Partial<CaptionAssistantSession>;
+  const candidate = value as Partial<CaptionAssistantSessionSummary>;
   return (
     typeof candidate.session_id === 'string' &&
     typeof candidate.platform === 'string' &&
     typeof candidate.analysis_mode === 'string' &&
-    Array.isArray(candidate.turns) &&
-    !!candidate.global_editing_state &&
-    typeof candidate.global_editing_state === 'object'
+    typeof candidate.status === 'string' &&
+    typeof candidate.title === 'string' &&
+    typeof candidate.subtitle === 'string'
   );
 };
 
@@ -107,6 +107,7 @@ const CaptionGenerator: React.FC = () => {
   const [activeDrawer, setActiveDrawer] = useState<DrawerType | null>(null);
   const [historySidebarCollapsed, setHistorySidebarCollapsed] = useState<boolean>(false);
   const [pendingUserPrompt, setPendingUserPrompt] = useState<string | null>(null);
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [selectedUploadIndex, setSelectedUploadIndex] = useState<number>(0);
   const [, setStatusMessage] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState<UploadPreviewState[]>([]);
@@ -121,11 +122,12 @@ const CaptionGenerator: React.FC = () => {
     () => getWorkflowRows(session?.global_editing_state?.workflow),
     [session?.global_editing_state?.workflow],
   );
+  const isSessionLoading = loadingSessionId !== null;
   const isRunning = session ? session.status === 'processing' : loading;
   const isInitialUploadInFlight =
     composerMode === 'initial' && pendingUserPrompt !== null && session === null;
-  const submitDisabled = isRunning || isInitialUploadInFlight;
-  const isSubmitting = loading || pendingUserPrompt !== null;
+  const submitDisabled = isRunning || isInitialUploadInFlight || isSessionLoading;
+  const isSubmitting = loading || pendingUserPrompt !== null || isSessionLoading;
   const useLegacyLocalUpload = useMemo(() => {
     if (typeof window === 'undefined') {
       return false;
@@ -267,14 +269,39 @@ const CaptionGenerator: React.FC = () => {
     upsertSessionHistory(session);
   }, [session, upsertSessionHistory]);
 
+  const openSessionFromHistory = useCallback(async (sessionId: string) => {
+    setLoadingSessionId(sessionId);
+    setLoading(true);
+    setAccessRecoveryRequired(false);
+    setError('');
+    try {
+      const nextSession = await getCaptionAssistantSession(sessionId);
+      startTransition(() => {
+        setPendingUserPrompt(null);
+        setDraftPrompt('');
+        setAnalysisMode(nextSession.analysis_mode);
+        setSession(nextSession);
+        setComposerMode('followup');
+        setActiveDrawer(null);
+      });
+      upsertSessionHistory(nextSession);
+    } catch (err) {
+      await handleAccessRecovery(err, '读取历史会话失败，请重试');
+      console.error('Error getting caption assistant session:', err);
+    } finally {
+      setLoadingSessionId(null);
+      setLoading(false);
+    }
+  }, [handleAccessRecovery, upsertSessionHistory]);
+
   useEffect(() => {
     let cancelled = false;
 
-    const applyLoadedSessions = (sessions: CaptionAssistantSession[]) => {
+    const applyLoadedSessions = (sessions: CaptionAssistantSessionSummary[]) => {
       if (cancelled || !sessions.length) {
         return;
       }
-      const historyItems = sessions.map((item) => buildSessionHistoryItem(item));
+      const historyItems = sessions.map((item) => buildSessionHistoryItemFromSummary(item));
       setSessionHistory(historyItems);
 
       if (typeof window === 'undefined') {
@@ -288,12 +315,12 @@ const CaptionGenerator: React.FC = () => {
       if (!nextSession || cancelled) {
         return;
       }
-      applyAuthoritativeSession(nextSession);
+      void openSessionFromHistory(nextSession.session_id);
     };
 
     const loadPersistedSessions = async () => {
       try {
-        const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSession);
+        const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSessionSummary);
         applyLoadedSessions(sessions);
       } catch (err) {
         if (!cancelled) {
@@ -302,7 +329,7 @@ const CaptionGenerator: React.FC = () => {
           }
           if (isLikelyAccessAuthError(err)) {
             try {
-              const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSession);
+              const sessions = (await listCaptionAssistantSessions()).filter(isValidCaptionSessionSummary);
               applyLoadedSessions(sessions);
               return;
             } catch (retryError) {
@@ -320,7 +347,7 @@ const CaptionGenerator: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [applyAuthoritativeSession, handleAccessRecovery]);
+  }, [handleAccessRecovery, openSessionFromHistory]);
 
   useEffect(() => {
     if (!session?.session_id) {
@@ -490,6 +517,7 @@ const CaptionGenerator: React.FC = () => {
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     }
     setPendingUserPrompt(null);
+    setLoadingSessionId(null);
     setSession(null);
     setVideos([]);
     setVideoPreviewUrls([]);
@@ -506,29 +534,6 @@ const CaptionGenerator: React.FC = () => {
     setAccessRecoveryRequired(false);
     setError('');
     setStatusMessage('');
-  };
-
-  const openSessionFromHistory = async (sessionId: string) => {
-    setLoading(true);
-    setAccessRecoveryRequired(false);
-    setError('');
-    try {
-      const nextSession = await getCaptionAssistantSession(sessionId);
-      startTransition(() => {
-        setPendingUserPrompt(null);
-        setDraftPrompt('');
-        setAnalysisMode(nextSession.analysis_mode);
-        setSession(nextSession);
-        setComposerMode('followup');
-        setActiveDrawer(null);
-      });
-      upsertSessionHistory(nextSession);
-    } catch (err) {
-      await handleAccessRecovery(err, '读取历史会话失败，请重试');
-      console.error('Error getting caption assistant session:', err);
-    } finally {
-      setLoading(false);
-    }
   };
 
   const clearUploadedVideo = useCallback(() => {
@@ -815,6 +820,7 @@ const CaptionGenerator: React.FC = () => {
           collapsed={historySidebarCollapsed}
           sessionHistory={sessionHistory}
           activeSessionId={session?.session_id}
+          loadingSessionId={loadingSessionId}
           onExpand={() => setHistorySidebarCollapsed(false)}
           onCollapse={() => setHistorySidebarCollapsed(true)}
           onReset={resetSession}
@@ -827,6 +833,8 @@ const CaptionGenerator: React.FC = () => {
           onCloseDrawer={() => setActiveDrawer(null)}
           sessionHistory={sessionHistory}
           activeSessionId={session?.session_id}
+          loadingSessionId={loadingSessionId}
+          isSessionLoading={isSessionLoading}
           onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
           onReset={resetSession}
           threadRef={threadRef}
