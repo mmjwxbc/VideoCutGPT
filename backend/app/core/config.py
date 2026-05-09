@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     upload_chunk_size: int = 512 * 1024
     ffmpeg_execution_timeout_seconds: int = 600
     caption_tts_enabled: bool = True
+    kokoro_repo_id: str = "hexgrad/Kokoro-82M"
+    kokoro_model_dir: Optional[str] = "./weights/kokoro-82M"
+    kokoro_config_path: Optional[str] = None
+    kokoro_model_path: Optional[str] = None
+    kokoro_voices_dir: Optional[str] = None
+    kokoro_local_files_only: bool = True
     kokoro_default_lang_code: str = "a"
     kokoro_default_voice: str = "af_heart"
     kokoro_chinese_lang_code: str = "z"

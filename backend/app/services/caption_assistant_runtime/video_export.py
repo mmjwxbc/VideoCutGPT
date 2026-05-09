@@ -207,6 +207,8 @@ class VideoExportService:
         payload = parse_json_object(action_input)
         burn_subtitles = decision.burn_subtitles if not isinstance(payload, dict) else bool(payload.get("burn_subtitles", decision.burn_subtitles))
         drop_audio = bool(payload.get("drop_audio")) if isinstance(payload, dict) else False
+        tts_language = str(payload.get("tts_language", "")).strip() if isinstance(payload, dict) else ""
+        tts_voice = str(payload.get("tts_voice", "")).strip() if isinstance(payload, dict) else ""
 
         session_export_dir = os.path.join(settings.export_dir, session.session_id)
         os.makedirs(session_export_dir, exist_ok=True)
@@ -316,6 +318,8 @@ class VideoExportService:
                     subtitle_draft=working_state.subtitle_draft,
                     output_path=tts_audio_path,
                     target_duration_seconds=merged_duration,
+                    language_hint=tts_language or None,
+                    voice_hint=tts_voice or None,
                 )
 
             if subtitle_path or tts_audio_path:

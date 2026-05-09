@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Literal, Type
 
 from pydantic import BaseModel, Field
 
-from app.agent.runtime import ToolResult, ToolSpec
+from app.agent.runtime import BaseTool, ToolResult
 from app.models import AgentTurn, CaptionSession, GlobalEditingState, TurnEventItem
 
 if TYPE_CHECKING:
@@ -90,6 +90,8 @@ class MergeRenderedSegmentsInput(BaseModel):
     burn_subtitles: bool | None = None
     drop_audio: bool = False
     notes: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
 
 
 @dataclass
@@ -102,7 +104,7 @@ class CaptionToolContext:
     targets: Dict[str, Any]
 
 
-class CaptionAssistantTool(ABC):
+class CaptionAssistantTool(BaseTool):
     name: str = ""
     description: str = ""
     input_model: Type[BaseModel] = EmptyToolInput
@@ -143,14 +145,6 @@ class CaptionAssistantTool(ABC):
     @abstractmethod
     async def execute(self, action_input: BaseModel) -> str | ToolResult:
         """Execute the concrete tool action."""
-
-    def to_spec(self) -> ToolSpec:
-        return ToolSpec(
-            name=self.name,
-            description=self.description,
-            input_model=self.input_model,
-            run=self.run,
-        )
 
     def _normalize_result(self, result: str | ToolResult) -> str:
         if isinstance(result, ToolResult):

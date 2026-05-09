@@ -419,7 +419,7 @@ class CaptionConversationAssistant:
             WriteTagsTool(context),
             RunVideoEditSubagentTool(context),
         ]:
-            registry.register(tool.to_spec())
+            registry.register(tool)
         return registry
 
     def build_video_edit_tool_registry(
@@ -445,7 +445,7 @@ class CaptionConversationAssistant:
             RenderClipSegmentTool(context),
             MergeRenderedSegmentsTool(context),
         ]:
-            registry.register(tool.to_spec())
+            registry.register(tool)
         return registry
 
     async def tool_run_video_edit_subagent(
@@ -534,8 +534,10 @@ class CaptionConversationAssistant:
     def build_runtime_task_brief(self) -> str:
         return (
             "理解并完成用户这一轮的最新目标。"
-            "\n只调用真正有帮助的工具，避免无意义重复。"
+            "\n只调用真正有帮助的工具，避免无意义重复和形式化流程。"
+            "\n优先复用已有成果；只有在现有结果不足、失效或用户明确要求重做时才重新生成。"
             "\n如果用户要求导出视频，先确认视觉摘要、字幕和剪辑方案是否足够，再建立片段映射并执行导出。"
+            "\n如果用户是在继续导出或重试导出，且已有片段映射或渲染进度，优先保护现场，不要轻易重建片段映射。"
             "\n如果信息不足，可以直接向用户说明缺口；如果任务已完成，直接给出最终回复。"
         )
 
@@ -570,6 +572,9 @@ class CaptionConversationAssistant:
 - 服务端会自动注入 ffmpeg 的输入视频路径与输出文件路径，不需要再次向用户索要。
 - 如果要导出视频，通常应先调用 derive_clip_segments，再调用 run_video_edit_subagent。
 - 只能基于真实工具结果继续规划，不要假设工具已经成功。
+- 如果当前已经有 segments / rendered_segments，而用户意图是“继续导出 / 重试导出 / 接着做”，优先继续现有进度，不要默认重建片段映射。
+- 如果某个工具对同一问题已连续失败，不要原样重复提交同一参数；要么修正输入，要么说明真实阻塞点。
+- 如果需要中文 TTS，请在 merge_rendered_segments 中显式传 tts_language="汉语"；如需指定音色，再传 tts_voice。
 """.strip()
         current_state = (
             "[当前剪辑状态 - 权威事实]\n"
