@@ -295,10 +295,14 @@ class ContentGenerationService:
                     "只输出纯文本字幕，不要 markdown、不要表格、不要编号、不要项目符号、不要解释文字。"
                     "\n每行必须严格为 `00:00-00:03 字幕内容` 格式。"
                     "\n不允许单点时间戳。"
+                    "\n每行字幕必须能在对应时间里自然念完，宁可更短，不要硬塞长句。"
                 ),
             )
         if total_duration_seconds:
-            prompt += prompt_block("总时长要求（秒）", str(total_duration_seconds))
+            prompt += prompt_block(
+                "总时长要求（秒）",
+                f"{total_duration_seconds}。字幕时间轴不能超过该时长，但最后一条可以早于该时长结束。",
+            )
         return await self._completion_service.text_complete(prompt, system_prompt=CAPTION_ASSISTANT_SYSTEM_PROMPT)
 
     async def retry_invalid_timeline_subtitles_once(

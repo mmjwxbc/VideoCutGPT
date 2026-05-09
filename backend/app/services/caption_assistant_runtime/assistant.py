@@ -19,6 +19,7 @@ from app.services.caption_assistant_runtime.serialization import SerializationSe
 from app.services.caption_assistant_runtime.shared import parse_json_object
 from app.services.caption_assistant_runtime.store import CaptionSessionStore
 from app.services.caption_assistant_runtime.task_board import TaskBoardService
+from app.services.caption_assistant_runtime.tts_service import KokoroTtsService
 from app.services.caption_assistant_runtime.tools import (
     CaptionToolContext,
     CreateTaskBoardTool,
@@ -56,9 +57,11 @@ class CaptionConversationAssistant:
             self.task_board_service,
             self.clip_derivation_service,
         )
+        self.tts_service = KokoroTtsService()
         self.video_export_service = VideoExportService(
             self.task_board_service,
             self.clip_derivation_service,
+            self.tts_service,
         )
         self.serialization_service = SerializationService()
         self._session_locks: Dict[str, asyncio.Lock] = {}
@@ -604,8 +607,9 @@ class CaptionConversationAssistant:
             "\n3. 如果片段很多，要主动判断是否需要提高某些片段的 speed 来满足目标时长；不要盲目把所有片段都原速保留。"
             "\n4. 如果发现当前片段映射明显不够支撑目标时长，或 segment 语义混乱，应回到主 agent 重新做更密的关键帧分析和片段映射，而不是强行 finalize。"
             "\n5. 只有当所有片段都渲染完成后，才能调用 merge_rendered_segments 合并并在需要时烧录字幕。"
-            "\n6. 如果 render_clip_segment 或 merge_rendered_segments 返回错误，必须基于错误内容修改输入参数后再次调用对应工具，不能重复提交相同参数，也不能直接 finalize。"
-            "\n7. 如果 merge_rendered_segments 明确指出字幕时间轴格式错误，必须先调用 write_subtitles 重新生成严格 timeline_plain 格式字幕，成功后才能再次合并。"
+            "\n6. 最终合并阶段会基于字幕时间轴自动生成 TTS 音轨；字幕句子必须能在各自时段内念完，但不需要强行铺满整段视频。"
+            "\n7. 如果 render_clip_segment 或 merge_rendered_segments 返回错误，必须基于错误内容修改输入参数后再次调用对应工具，不能重复提交相同参数，也不能直接 finalize。"
+            "\n8. 如果 merge_rendered_segments 明确指出字幕时间轴格式错误，必须先调用 write_subtitles 重新生成严格 timeline_plain 格式字幕，成功后才能再次合并。"
             f"\n用户目标：{user_prompt.strip() or '执行视频导出'}"
             f"\n平台：{session.platform}"
             f"\n字幕是否可用：{bool(working_state.subtitle_draft.strip())}"
@@ -625,6 +629,7 @@ class CaptionConversationAssistant:
             f"\n片段渲染状态：\n{self.clip_derivation_service.summarize_rendered_segments(working_state.executable_edit) or '无'}"
             f"\n字幕草稿预览：{working_state.subtitle_draft[:1200] if working_state.subtitle_draft else '无'}"
             f"\n字幕开关：{working_state.executable_edit.burn_subtitles}"
+            f"\nTTS 开关：{self.tts_service.is_enabled()}"
             f"\n目标比例：{working_state.executable_edit.aspect_ratio}"
             f"\n上一次失败命令：{working_state.edited_video.command or '无'}"
             f"\n上一次错误：{working_state.edited_video.error_message or '无'}"

@@ -17,6 +17,7 @@ from app.models import AgentTurn, CaptionSession, EditedVideoArtifact, GlobalEdi
 from app.services.caption_assistant_runtime.clip_derivation import ClipDerivationService
 from app.services.caption_assistant_runtime.shared import parse_json_object
 from app.services.caption_assistant_runtime.task_board import TaskBoardService
+from app.services.caption_assistant_runtime.tts_service import KokoroTtsService
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,11 @@ class VideoExportService:
         self,
         task_board_service: TaskBoardService,
         clip_derivation_service: ClipDerivationService,
+        tts_service: KokoroTtsService,
     ) -> None:
         self._task_board_service = task_board_service
         self._clip_derivation_service = clip_derivation_service
+        self._tts_service = tts_service
 
     async def tool_read_video_edit_context(
         self,
@@ -46,6 +49,7 @@ class VideoExportService:
             "burn_subtitles": working_state.executable_edit.burn_subtitles,
             "subtitle_available": bool(working_state.subtitle_draft.strip()),
             "subtitle_preview": working_state.subtitle_draft[:1200],
+            "tts_enabled": self._tts_service.is_enabled(),
             "segments": [asdict(segment) for segment in working_state.executable_edit.segments],
             "rendered_segments": [asdict(item) for item in working_state.executable_edit.rendered_segments],
             "next_pending_segment": asdict(next_segment) if (next_segment := self._clip_derivation_service.next_pending_segment(working_state.executable_edit)) else None,
@@ -125,7 +129,7 @@ class VideoExportService:
             expected_duration = round(float(target_segment.output_duration_seconds or 0), 4)
             actual_duration = round(float(probe.get("duration_seconds") or 0), 4)
             duration_delta = round(abs(actual_duration - expected_duration), 4)
-            duration_ok = duration_delta <= 0.3
+            duration_ok = actual_duration <= expected_duration + 0.3
             rendered.expected_duration_seconds = expected_duration
             rendered.actual_duration_seconds = actual_duration
             rendered.duration_delta_seconds = duration_delta
@@ -134,7 +138,7 @@ class VideoExportService:
             if not duration_ok:
                 raise RuntimeError(
                     f"片段 {target_segment.id} 时长校验失败：expected={expected_duration:.2f}s, "
-                    f"actual={actual_duration:.2f}s, delta={duration_delta:.2f}s。"
+                    f"actual={actual_duration:.2f}s。当前仅拦截超出目标时长的情况，短于目标时长不会拦截。"
                 )
             rendered.status = "done"
             rendered.file_name = output_name
@@ -255,6 +259,8 @@ class VideoExportService:
             decision.merge_command = shlex.join(merge_args)
             decision.merged_segments_path = merged_path
             decision.merge_error_message = ""
+            merged_probe = self.probe_media(merged_path)
+            merged_duration = round(float(merged_probe.get("duration_seconds") or 0), 4)
 
             subtitle_path = ""
             if burn_subtitles and working_state.subtitle_draft.strip():
@@ -298,29 +304,52 @@ class VideoExportService:
                         },
                         duration_ok=False,
                     )
-            if subtitle_path:
-                escaped_subtitle = self.escape_subtitle_filter_path(subtitle_path)
-                subtitle_args = [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    merged_path,
-                    "-vf",
-                    f"subtitles={escaped_subtitle}",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "medium",
-                    "-crf",
-                    "23",
-                ]
-                if drop_audio:
-                    subtitle_args.extend(["-an"])
+            tts_audio_path = ""
+            tts_metadata: Dict[str, Any] = {}
+            if (
+                not drop_audio
+                and self._tts_service.is_enabled()
+                and working_state.subtitle_draft.strip()
+            ):
+                tts_audio_path = os.path.join(session_export_dir, f"{turn.turn_id}_tts.wav")
+                tts_metadata = self._tts_service.synthesize_timeline_audio(
+                    subtitle_draft=working_state.subtitle_draft,
+                    output_path=tts_audio_path,
+                    target_duration_seconds=merged_duration,
+                )
+
+            if subtitle_path or tts_audio_path:
+                final_args = ["ffmpeg", "-y", "-i", merged_path]
+                if tts_audio_path:
+                    final_args.extend(["-i", tts_audio_path])
+                if subtitle_path:
+                    escaped_subtitle = self.escape_subtitle_filter_path(subtitle_path)
+                    final_args.extend(["-vf", f"subtitles={escaped_subtitle}"])
+                final_args.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
+                if tts_audio_path:
+                    final_args.extend(
+                        [
+                            "-map",
+                            "0:v:0",
+                            "-map",
+                            "1:a:0",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "128k",
+                            "-ar",
+                            "48000",
+                            "-ac",
+                            "1",
+                        ]
+                    )
+                elif drop_audio:
+                    final_args.extend(["-an"])
                 else:
-                    subtitle_args.extend(["-c:a", "aac", "-b:a", "128k"])
-                subtitle_args.append(final_path)
-                await self.run_ffmpeg_command(subtitle_args)
-                final_command = shlex.join(subtitle_args)
+                    final_args.extend(["-c:a", "aac", "-b:a", "128k"])
+                final_args.append(final_path)
+                await self.run_ffmpeg_command(final_args)
+                final_command = shlex.join(final_args)
             else:
                 final_command = shlex.join(merge_args)
                 if merged_path != final_path:
@@ -336,16 +365,17 @@ class VideoExportService:
             actual_total_duration = round(float(final_probe.get("duration_seconds") or 0), 4)
             duration_delta = round(abs(actual_total_duration - expected_total_duration), 4)
             target_duration = round(float(decision.total_duration_seconds or expected_total_duration), 4)
-            target_delta = round(abs(actual_total_duration - target_duration), 4)
-            duration_ok = duration_delta <= 1.0 and target_delta <= 1.0
+            duration_ok = (
+                actual_total_duration <= expected_total_duration + 1.0
+                and actual_total_duration <= target_duration + 1.0
+            )
             if not duration_ok:
                 raise RuntimeError(
                     "最终成片时长校验失败："
                     f" expected_total={expected_total_duration:.2f}s,"
                     f" actual_total={actual_total_duration:.2f}s,"
                     f" target={target_duration:.2f}s,"
-                    f" delta={duration_delta:.2f}s,"
-                    f" target_delta={target_delta:.2f}s。"
+                    " 当前仅拦截超出目标时长的情况，短于目标时长不会再触发死循环重试。"
                 )
 
             working_state.edited_video = EditedVideoArtifact(
@@ -357,13 +387,21 @@ class VideoExportService:
                     (decision.summary or turn.user_prompt.strip())
                     + f"\n实际导出时长：{actual_total_duration:.2f}s"
                     + f"\n目标时长：{target_duration:.2f}s"
+                    + (
+                        f"\nTTS：{tts_metadata.get('voice', '')} / {tts_metadata.get('cue_count', 0)} 条字幕"
+                        if tts_metadata
+                        else ""
+                    )
                 ),
                 error_message="",
                 size_bytes=os.path.getsize(final_path),
                 expected_duration_seconds=expected_total_duration,
                 actual_duration_seconds=actual_total_duration,
                 duration_ok=True,
-                probe_metadata=final_probe,
+                probe_metadata={
+                    **final_probe,
+                    "tts": tts_metadata,
+                },
             )
             self._task_board_service.complete_workflow_artifact(working_state, "edited_video", "剪辑视频已导出，可在右侧下载。")
             self._task_board_service.set_task_status(turn, "verify_export", "done", notes="已生成可下载成片。")
@@ -378,7 +416,10 @@ class VideoExportService:
                 expected_duration_seconds=expected_total_duration,
                 actual_duration_seconds=actual_total_duration,
                 duration_ok=True,
-                probe_metadata=final_probe,
+                probe_metadata={
+                    **final_probe,
+                    "tts": tts_metadata,
+                },
             )
         except Exception as exc:
             decision.merge_error_message = str(exc)

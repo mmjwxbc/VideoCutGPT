@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     max_upload_size: int = 1024 * 1024 * 1024
     upload_chunk_size: int = 512 * 1024
     ffmpeg_execution_timeout_seconds: int = 600
+    caption_tts_enabled: bool = True
+    kokoro_default_lang_code: str = "a"
+    kokoro_default_voice: str = "af_heart"
+    kokoro_chinese_lang_code: str = "z"
+    kokoro_chinese_voice: str = "zf_xiaobei"
+    kokoro_max_speed: float = 1.8
+    kokoro_overflow_tolerance_seconds: float = 0.05
 
     # Backblaze B2 Config
     b2_authorize_url: str = "https://api.backblazeb2.com/b2api/v4/b2_authorize_account"
