@@ -61,9 +61,12 @@ EDIT_PLAN_GENERATION_PROMPT = """任务：生成或修改短视频剪辑方案�
 输出要求：
 1. 按镜头或时间段列出，便于直接执行。
 2. 每段至少说明：镜头目标、画面内容、字幕策略、节奏或转场建议。
-3. 如有必要，补充 B-roll、特写、音效、音乐、速度变化建议。
-4. 若存在明确后期技术动作，可写出简洁执行提示。
-5. 只输出最终剪辑方案正文，不要解释，不要 JSON。
+3. 对每个片段切点，都要明确写出“转场到下一段”的选择；如果不需要转场，也要明确写“硬切”。
+4. 转场建议必须是片段之间可执行的后期动作，优先使用这类名称：hard_cut、fade、dissolve、wipeleft、wiperight、slideleft、slideright、circleopen、circleclose、zoomin、pixelize、coverleft、coverright。
+5. 转场选择要服务节奏：开场和强节奏段优先 hard_cut / slide / wipe；展示结果或情绪缓冲段可用 fade / dissolve；不要整条视频滥用花哨转场。
+6. 如有必要，补充 B-roll、特写、音效、音乐、速度变化建议。
+7. 若存在明确后期技术动作，可写出简洁执行提示。
+8. 只输出最终剪辑方案正文，不要解释，不要 JSON。
 """
 
 TITLE_GENERATION_PROMPT = """任务：生成或修改英文标题。
@@ -125,6 +128,7 @@ DERIVE_CLIP_SEGMENTS_PROMPT = """任务：把创意剪辑方案翻译成可执�
 4. editing_plan 里的时间是成片时间线，不是原视频时间线。你必须输出原视频中的 source_start/source_end。
 5. 如果片段数量偏多、总时长可能超标，立刻删减冗余片段或进一步提速。
 6. 不要在片段映射中输出 subtitle_text，字幕的唯一来源是全局字幕草稿。
+7. 如果剪辑方案里为片段之间指定了转场，你必须把它映射到每个 segment 的 transition_to_next 字段；最后一个片段固定写 hard_cut。
 
 输出要求：
 1. 只输出 JSON。
@@ -132,4 +136,5 @@ DERIVE_CLIP_SEGMENTS_PROMPT = """任务：把创意剪辑方案翻译成可执�
 {"summary":"...","total_duration_seconds":15,"aspect_ratio":"9:16","burn_subtitles":true,"segments":[{"id":"seg_1","source_start":"00:00:12","source_end":"00:00:18","timeline_start":"00:00:00","timeline_end":"00:00:03","output_duration_seconds":3,"purpose":"开场 hook","visual_instruction":"特写污渍区域","speed":2.0,"transition_to_next":"hard_cut"}]}
 3. source_start/source_end 必须是原视频相对时间。
 4. output_duration_seconds 和 timeline_start/timeline_end 必须自洽；speed 只需表达大致压缩意图，最终会由代码重新校正。
+5. transition_to_next 必须使用可执行转场名；无转场时写 hard_cut。可用值优先限定为：hard_cut、fade、dissolve、wipeleft、wiperight、slideleft、slideright、circleopen、circleclose、zoomin、pixelize、coverleft、coverright。
 """

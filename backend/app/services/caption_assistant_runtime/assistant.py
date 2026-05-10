@@ -23,10 +23,12 @@ from app.services.caption_assistant_runtime.store import CaptionSessionStore
 from app.services.caption_assistant_runtime.task_board import TaskBoardService
 from app.services.caption_assistant_runtime.tts_service import KokoroTtsService
 from app.services.caption_assistant_runtime.tools import (
+    ApplyFadeEffectTool,
     CaptionToolContext,
     CreateTaskBoardTool,
     DeriveClipSegmentsTool,
     MergeRenderedSegmentsTool,
+    MergeRenderedSegmentsWithTransitionsTool,
     ReadCurrentArtifactsTool,
     ReadManualTool,
     ReadTaskBoardTool,
@@ -449,6 +451,8 @@ class CaptionConversationAssistant:
             WriteTitleTool(context),
             WriteTagsTool(context),
             RunVideoEditSubagentTool(context),
+            MergeRenderedSegmentsWithTransitionsTool(context),
+            ApplyFadeEffectTool(context),
         ]:
             registry.register(tool)
         return registry
@@ -475,6 +479,8 @@ class CaptionConversationAssistant:
             WriteSubtitlesTool(context),
             RenderClipSegmentTool(context),
             MergeRenderedSegmentsTool(context),
+            MergeRenderedSegmentsWithTransitionsTool(context),
+            ApplyFadeEffectTool(context),
         ]:
             registry.register(tool)
         return registry
@@ -636,13 +642,13 @@ class CaptionConversationAssistant:
         del turn
         return (
             "你是专门负责 ffmpeg 剪辑导出的 ReAct 子代理。"
-            "\n目标：基于已有片段映射，把原视频逐段裁切、缩放、必要时调速，先生成单段片段，再合并成最终成片。"
+            "\n目标：基于已有片段映射，把原视频逐段裁切、缩放、必要时调速，先生成单段片段，再按剪辑方案中的片段间转场合并成最终成片。"
             "\n执行要求："
             "\n1. 先调用 read_video_edit_context，确认输入视频路径、输出目录、片段映射、字幕状态、上一条失败命令和错误。"
             "\n2. 片段必须逐个处理：优先调用 render_clip_segment，一次只处理一个 segment。"
             "\n3. 如果片段很多，要主动判断是否需要提高某些片段的 speed 来满足目标时长；不要盲目把所有片段都原速保留。"
             "\n4. 如果发现当前片段映射明显不够支撑目标时长，或 segment 语义混乱，应回到主 agent 重新做更密的关键帧分析和片段映射，而不是强行 finalize。"
-            "\n5. 只有当所有片段都渲染完成后，才能调用 merge_rendered_segments 合并并在需要时烧录字幕。"
+            "\n5. 只有当所有片段都渲染完成后，才能调用 merge_rendered_segments 合并并在需要时烧录字幕；如果片段映射里的 transition_to_next 不是 hard_cut，合并阶段必须按这些转场执行。"
             "\n6. 最终合并阶段会基于字幕时间轴自动生成 TTS 音轨；字幕句子必须能在各自时段内念完，但不需要强行铺满整段视频。"
             "\n7. 如果 render_clip_segment 或 merge_rendered_segments 返回错误，必须基于错误内容修改输入参数后再次调用对应工具，不能重复提交相同参数，也不能直接 finalize。"
             "\n8. 如果 merge_rendered_segments 明确指出字幕时间轴格式错误，必须先调用 write_subtitles 重新生成严格 timeline_plain 格式字幕，成功后才能再次合并。"

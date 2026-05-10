@@ -144,7 +144,9 @@ class ClipDerivationService:
         for segment in segments[:12]:
             lines.append(
                 f"{segment.id}: 原视频 {segment.source_start}-{segment.source_end} -> "
-                f"成片 {segment.timeline_start}-{segment.timeline_end} | {segment.purpose or segment.visual_instruction or '无说明'}"
+                f"成片 {segment.timeline_start}-{segment.timeline_end} | "
+                f"转场 {segment.transition_to_next or 'hard_cut'} | "
+                f"{segment.purpose or segment.visual_instruction or '无说明'}"
             )
         return "\n".join(lines)
 

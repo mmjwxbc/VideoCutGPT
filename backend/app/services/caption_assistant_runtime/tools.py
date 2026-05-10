@@ -94,6 +94,95 @@ class MergeRenderedSegmentsInput(BaseModel):
     tts_voice: str | None = None
 
 
+XFadeTransitionName = Literal[
+    "fade",
+    "fadeblack",
+    "fadewhite",
+    "fadegrays",
+    "wipeleft",
+    "wiperight",
+    "wipeup",
+    "wipedown",
+    "wipetl",
+    "wipetr",
+    "wipebl",
+    "wipebr",
+    "slideleft",
+    "slideright",
+    "slideup",
+    "slidedown",
+    "revealright",
+    "revealleft",
+    "revealup",
+    "revealdown",
+    "horzopen",
+    "horzclose",
+    "vertopen",
+    "vertclose",
+    "circleopen",
+    "circleclose",
+    "circlecrop",
+    "rectcrop",
+    "hblur",
+    "radial",
+    "diagtl",
+    "diagtr",
+    "diagbl",
+    "diagbr",
+    "dissolve",
+    "pixelize",
+    "hlslice",
+    "hrslice",
+    "vuslice",
+    "vdslice",
+    "zoomin",
+    "squeezeh",
+    "squeezev",
+    "hlwind",
+    "hrwind",
+    "vuwind",
+    "vdwind",
+    "coverleft",
+    "coverright",
+    "coverup",
+    "coverdown",
+]
+
+
+class TransitionSpecInput(BaseModel):
+    transition: XFadeTransitionName | Literal["custom"] = "fade"
+    duration_seconds: float = Field(default=1.0, gt=0.0, le=5.0)
+    custom_expr: str | None = None
+    audio_crossfade: bool = True
+    audio_curve1: str = "tri"
+    audio_curve2: str = "tri"
+
+
+class MergeRenderedSegmentsWithTransitionsInput(BaseModel):
+    transitions: list[TransitionSpecInput] = Field(default_factory=list)
+    default_transition: XFadeTransitionName = "fade"
+    default_duration_seconds: float = Field(default=1.0, gt=0.0, le=5.0)
+    use_segment_transition_metadata: bool = True
+    burn_subtitles: bool | None = None
+    drop_audio: bool = False
+    fps: int = Field(default=30, ge=1, le=120)
+    summary: str | None = None
+    tts_language: str | None = None
+    tts_voice: str | None = None
+
+
+class ApplyFadeEffectInput(BaseModel):
+    target: Literal["edited_video", "merged_video", "session_video", "rendered_segment"] = "edited_video"
+    segment_id: str | None = None
+    fade_in_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
+    fade_out_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
+    fade_out_start_seconds: float | None = None
+    color: str = "black"
+    fade_audio: bool = True
+    output_extension: Literal["mp4", "mov", "mkv", "webm"] = "mp4"
+    summary: str | None = None
+
+
 @dataclass
 class CaptionToolContext:
     assistant: "CaptionConversationAssistant"
@@ -378,6 +467,39 @@ class MergeRenderedSegmentsTool(CaptionAssistantTool):
 
     async def execute(self, action_input: MergeRenderedSegmentsInput) -> str:
         return await self.context.assistant.video_export_service.tool_merge_rendered_segments(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input.model_dump_json(exclude_none=True),
+        )
+
+
+class MergeRenderedSegmentsWithTransitionsTool(CaptionAssistantTool):
+    name = "merge_rendered_segments_with_transitions"
+    description = (
+        "按顺序为已渲染片段添加 FFmpeg xfade/acrossfade 转场并输出最终成片。"
+        "支持 40+ 内建转场、custom expr、自定义每段时长、自动 offset 计算、字幕烧录与 TTS。"
+    )
+    input_model = MergeRenderedSegmentsWithTransitionsInput
+
+    async def execute(self, action_input: MergeRenderedSegmentsWithTransitionsInput) -> str:
+        return await self.context.assistant.video_export_service.tool_merge_rendered_segments_with_transitions(
+            self.context.session,
+            self.context.turn,
+            self.context.working_state,
+            self.context.user_prompt,
+            action_input.model_dump_json(exclude_none=True),
+        )
+
+
+class ApplyFadeEffectTool(CaptionAssistantTool):
+    name = "apply_fade_effect"
+    description = "对当前成片、已合并视频、原视频或指定片段施加 fade/afade 淡入淡出效果。"
+    input_model = ApplyFadeEffectInput
+
+    async def execute(self, action_input: ApplyFadeEffectInput) -> str:
+        return await self.context.assistant.video_export_service.tool_apply_fade_effect(
             self.context.session,
             self.context.turn,
             self.context.working_state,
