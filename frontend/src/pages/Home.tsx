@@ -1,17 +1,22 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowRight,
   Bell,
+  Bot,
   ChevronDown,
+  ChevronLeft,
   Clapperboard,
+  Download,
   FileText,
   BookOpen,
   Globe,
   Layers,
   MessageSquare,
   Palette,
+  RefreshCcw,
   Sparkles,
   Upload,
+  Wrench,
   Wand2,
   Languages,
   Type,
@@ -363,6 +368,21 @@ const Footer: React.FC = () => (
 );
 
 /* ── Home page ── */
+const HomeScene: React.FC<{
+  onEnterCaption: () => void;
+  snapshot?: boolean;
+}> = ({ onEnterCaption, snapshot = false }) => (
+  <div
+    className={`bg-app-hero min-h-screen ${snapshot ? 'pointer-events-none select-none' : ''}`}
+    aria-hidden={snapshot}
+  >
+    <Navbar />
+    <Hero onEnterCaption={onEnterCaption} />
+    <FeatureSection />
+    <Footer />
+  </div>
+);
+
 const Home: React.FC = () => {
   const navigate = useNavigate();
   const [transitioning, setTransitioning] = useState(false);
@@ -371,303 +391,662 @@ const Home: React.FC = () => {
     setTransitioning(true);
   }, []);
 
-  if (transitioning) {
-    return <WormholeTransition onComplete={() => navigate('/caption')} />;
-  }
-
   return (
-    <div className="bg-app-hero min-h-screen">
-      <Navbar />
-      <Hero onEnterCaption={handleEnterCaption} />
-      <FeatureSection />
-      <Footer />
-    </div>
+    <>
+      <HomeScene onEnterCaption={handleEnterCaption} />
+      {transitioning ? (
+        <PageFoldRevealTransition onComplete={() => navigate('/caption')} />
+      ) : null}
+    </>
   );
 };
 
-/* ── Blackhole Cinematic Transition ── */
-interface WormholeTransitionProps {
+/* ── Page Fold & Reveal Transition ── */
+interface PageFoldRevealTransitionProps {
   onComplete: () => void;
 }
 
-const STAR_COUNT = 36;
-const RING_COUNT = 4;
-const GPU_HINTS: React.CSSProperties = { willChange: 'transform, opacity', transform: 'translateZ(0)' };
+const PAGE_FOLD_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+const PAGE_FLIGHT_DURATION_S = 2.35;
+const PAPER_SEGMENTS = [
+  {
+    id: 'nose-left',
+    clipPath: 'polygon(0 0, 52% 0, 50% 46%)',
+    transformOrigin: '100% 100%',
+    foldedTransform:
+      'translate3d(2%, -5%, 34px) rotateX(65deg) rotateY(-72deg) rotateZ(14deg)',
+    shade:
+      'linear-gradient(160deg, rgba(15,23,42,0.12) 0%, rgba(15,23,42,0.02) 40%, transparent 100%)',
+  },
+  {
+    id: 'nose-right',
+    clipPath: 'polygon(52% 0, 100% 0, 50% 46%)',
+    transformOrigin: '0% 100%',
+    foldedTransform:
+      'translate3d(-2%, -5%, 34px) rotateX(65deg) rotateY(72deg) rotateZ(-14deg)',
+    shade:
+      'linear-gradient(200deg, rgba(15,23,42,0.12) 0%, rgba(15,23,42,0.02) 40%, transparent 100%)',
+  },
+  {
+    id: 'wing-left',
+    clipPath: 'polygon(0 0, 50% 46%, 0 100%)',
+    transformOrigin: '100% 54%',
+    foldedTransform:
+      'translate3d(12%, -3%, 26px) rotateX(26deg) rotateY(-76deg) rotateZ(18deg)',
+    shade:
+      'linear-gradient(145deg, rgba(15,23,42,0.18) 0%, rgba(15,23,42,0.06) 45%, transparent 100%)',
+  },
+  {
+    id: 'wing-right',
+    clipPath: 'polygon(100% 0, 100% 100%, 50% 46%)',
+    transformOrigin: '0% 54%',
+    foldedTransform:
+      'translate3d(-12%, -3%, 26px) rotateX(26deg) rotateY(76deg) rotateZ(-18deg)',
+    shade:
+      'linear-gradient(215deg, rgba(15,23,42,0.18) 0%, rgba(15,23,42,0.06) 45%, transparent 100%)',
+  },
+  {
+    id: 'tail-left',
+    clipPath: 'polygon(0 100%, 50% 46%, 50% 100%)',
+    transformOrigin: '100% 0%',
+    foldedTransform:
+      'translate3d(6%, 0%, 18px) rotateX(-18deg) rotateY(-48deg) rotateZ(7deg)',
+    shade:
+      'linear-gradient(120deg, rgba(148,163,184,0.16) 0%, rgba(15,23,42,0.03) 48%, transparent 100%)',
+  },
+  {
+    id: 'tail-right',
+    clipPath: 'polygon(50% 46%, 100% 100%, 50% 100%)',
+    transformOrigin: '0% 0%',
+    foldedTransform:
+      'translate3d(-6%, 0%, 18px) rotateX(-18deg) rotateY(48deg) rotateZ(-7deg)',
+    shade:
+      'linear-gradient(240deg, rgba(148,163,184,0.16) 0%, rgba(15,23,42,0.03) 48%, transparent 100%)',
+  },
+] as const;
 
-const WormholeTransition: React.FC<WormholeTransitionProps> = ({ onComplete }) => {
+const PageFoldRevealTransition: React.FC<PageFoldRevealTransitionProps> = ({ onComplete }) => {
   const prefersReducedMotion = useReducedMotion();
-  const stars = React.useMemo(
-    () =>
-      Array.from({ length: STAR_COUNT }, (_, i) => {
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 80 + Math.random() * 600;
-        return {
-          id: i,
-          angle,
-          dist,
-          size: 1.0 + Math.random() * 3.0,
-          brightness: 0.4 + Math.random() * 0.6,
-          delay: Math.random() * 0.5,
-          fallDuration: 0.6 + (dist / 600) * 1.2 + Math.random() * 0.4,
-          hue: [200, 210, 220, 240, 260][Math.floor(Math.random() * 5)],
-          streakBase: 4 + Math.random() * 8,
-        };
-      }),
-    [],
-  );
 
-  const rings = React.useMemo(
-    () =>
-      Array.from({ length: RING_COUNT }, (_, i) => ({
-        id: i,
-        baseRadius: 80 + i * 60,
-        opacity: 0.08 + (RING_COUNT - i) * 0.04,
-        border: i < 2 ? 2 : 1,
-        hue: i % 2 === 0 ? 220 : 260,
-        spinDuration: 1.6 + i * 0.5,
-        reverse: i % 2 === 0,
-      })),
-    [],
-  );
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      onComplete,
+      prefersReducedMotion ? 180 : PAGE_FLIGHT_DURATION_S * 1000 + 120,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [onComplete, prefersReducedMotion]);
 
   if (prefersReducedMotion) {
     return (
       <motion.div
-        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black"
+        className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#edf4ff]"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.22 }}
-        onAnimationComplete={onComplete}
+        transition={{ duration: 0.18 }}
       >
-        <Sparkles className="h-8 w-8 text-blue-300/70" />
+        <PageBBack />
       </motion.div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-[9999] overflow-hidden bg-[#000000]">
-      {/* ── ENTRY PHASE ── */}
+    <div className="fixed inset-0 z-[9999] overflow-hidden bg-[#edf4ff]">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(96,165,250,0.22),transparent_28%),radial-gradient(circle_at_80%_14%,rgba(56,189,248,0.12),transparent_22%),linear-gradient(180deg,#f4f8ff_0%,#e6eefc_100%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0)_0%,rgba(255,255,255,0.12)_100%)]" />
 
-      {/* A: Stars appear then streak toward center — single merged layer */}
-      <div className="absolute inset-0">
-        {stars.map((s) => {
-          const cosA = Math.cos(s.angle);
-          const sinA = Math.sin(s.angle);
-          const streakScaleX = s.streakBase * 8;
-          return (
+      <div
+        className="absolute inset-0"
+        style={{ perspective: '2000px', transformStyle: 'preserve-3d' }}
+      >
+        <motion.div
+          className="absolute inset-0"
+          style={{ transform: 'translateZ(-1px)' }}
+          initial={{ opacity: 0.72, scale: 0.975, filter: 'blur(4px)' }}
+          animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+          transition={{ duration: 1.1, ease: PAGE_FOLD_EASE, delay: 0.55 }}
+        >
+          <PageBBack />
+        </motion.div>
+
+        <motion.div
+          className="pointer-events-none absolute left-1/2 top-1/2 h-[72vh] w-[66vw] min-w-[360px] max-w-[980px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+          initial={{ opacity: 0.22, scale: 0.8 }}
+          animate={{ opacity: [0.22, 0.3, 0.18, 0], scale: [0.8, 0.9, 1.1, 1.35] }}
+          transition={{ duration: PAGE_FLIGHT_DURATION_S, times: [0, 0.34, 0.76, 1], ease: 'linear' }}
+          style={{
+            background:
+              'radial-gradient(circle, rgba(37,99,235,0.20) 0%, rgba(56,189,248,0.12) 28%, rgba(255,255,255,0) 68%)',
+            filter: 'blur(40px)',
+          }}
+        />
+
+        <motion.div
+          className="pointer-events-none absolute inset-[2.2vh_2vw]"
+          style={{
+            transformOrigin: '50% 44%',
+            transformStyle: 'preserve-3d',
+          }}
+          initial={{
+            transform: 'translate3d(0px,0px,0px) scale3d(1,1,1) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
+            filter: 'blur(0px)',
+            opacity: 1,
+          }}
+          animate={{
+            transform: [
+              'translate3d(0px,0px,0px) scale3d(1,1,1) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
+              'translate3d(0px,-12px,0px) scale3d(0.38,0.38,1) rotateX(18deg) rotateY(0deg) rotateZ(0deg)',
+              'translate3d(110px,-54px,760px) scale3d(1.04,1.04,1) rotateX(12deg) rotateY(-16deg) rotateZ(-14deg)',
+              'translate3d(250px,-120px,2000px) scale3d(3.6,3.6,1) rotateX(18deg) rotateY(-34deg) rotateZ(-22deg)',
+            ],
+            filter: ['blur(0px)', 'blur(0px)', 'blur(5px)', 'blur(18px)'],
+            opacity: [1, 1, 1, 0],
+          }}
+          transition={{
+            duration: PAGE_FLIGHT_DURATION_S,
+            times: [0, 0.38, 0.79, 1],
+            ease: 'linear',
+          }}
+        >
+          <motion.div
+            className="absolute inset-[14%_28%_18%_28%]"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 0.75, 0.52, 0] }}
+            transition={{
+              duration: PAGE_FLIGHT_DURATION_S,
+              times: [0, 0.38, 0.72, 1],
+              ease: 'linear',
+            }}
+            style={{
+              background:
+                'radial-gradient(circle at 50% 52%, rgba(15,23,42,0.58) 0%, rgba(15,23,42,0.22) 34%, rgba(15,23,42,0) 72%)',
+              filter: 'blur(26px)',
+              transform: 'translate3d(0, 16%, -120px) rotateX(82deg)',
+            }}
+          />
+
+          {PAPER_SEGMENTS.map((segment, index) => (
             <motion.div
-              key={`s-${s.id}`}
-              layout={false}
-              className="absolute left-1/2 top-1/2"
+              key={segment.id}
+              className="absolute inset-0 overflow-hidden rounded-[32px] border border-white/45"
               style={{
-                rotate: `${(s.angle * 180) / Math.PI}deg`,
-                transformOrigin: '0 50%',
-                ...GPU_HINTS,
+                clipPath: segment.clipPath,
+                transformOrigin: segment.transformOrigin,
+                transformStyle: 'preserve-3d',
+                backfaceVisibility: 'hidden',
+                boxShadow: '0 32px 78px rgba(15, 23, 42, 0.16)',
+                background:
+                  'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.02) 100%)',
               }}
               initial={{
-                x: cosA * s.dist,
-                y: sinA * s.dist,
-                scaleX: 1,
-                scaleY: 1,
-                opacity: 0,
+                transform: 'translate3d(0, 0, 0) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
               }}
-              animate={{
-                x: [cosA * s.dist, cosA * s.dist, cosA * s.dist * 0.03],
-                y: [sinA * s.dist, sinA * s.dist, sinA * s.dist * 0.03],
-                scaleX: [1, s.streakBase * 2, streakScaleX],
-                scaleY: [1, 1, 0.6, 0.3],
-                opacity: [0, s.brightness, s.brightness, 0],
-              }}
+              animate={{ transform: segment.foldedTransform }}
               transition={{
-                duration: 1.2 + s.fallDuration * 0.45,
-                delay: s.delay * 0.3,
-                ease: [0.15, 0, 0.85, 1],
-                x: { times: [0, 0.3, 1] },
-                y: { times: [0, 0.3, 1] },
-                scaleX: { times: [0, 0.55, 1] },
-                scaleY: { times: [0, 0.55, 0.8, 1] },
-                opacity: { times: [0, 0.12, 0.45, 1] },
+                duration: 0.9,
+                delay: index * 0.045,
+                ease: PAGE_FOLD_EASE,
               }}
             >
-              <div
+              <HomeScene onEnterCaption={() => undefined} snapshot />
+              <motion.div
+                className="absolute inset-0"
+                initial={{ opacity: 0.02 }}
+                animate={{ opacity: 1 }}
+                transition={{
+                  duration: 0.85,
+                  delay: 0.12 + index * 0.04,
+                  ease: PAGE_FOLD_EASE,
+                }}
+                style={{ background: segment.shade }}
+              />
+              <motion.div
+                className="absolute inset-0"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: [0, 0.18, 0.08] }}
+                transition={{
+                  duration: 1.4,
+                  delay: 0.1,
+                  times: [0, 0.5, 1],
+                  ease: PAGE_FOLD_EASE,
+                }}
                 style={{
-                  width: s.size,
-                  height: s.size,
-                  borderRadius: '50%',
-                  backgroundColor: `hsl(${s.hue}, 80%, 85%)`,
+                  background:
+                    'linear-gradient(135deg, rgba(255,255,255,0.34) 0%, rgba(255,255,255,0.10) 38%, rgba(255,255,255,0) 72%)',
                 }}
               />
             </motion.div>
-          );
-        })}
+          ))}
+        </motion.div>
       </div>
-
-      {/* B: Concentric rings — scale-based animation (GPU-composited) */}
-      <div className="absolute inset-0 pointer-events-none">
-        {rings.map((r) => (
-          <motion.div
-            key={`ring-${r.id}`}
-            layout={false}
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-            style={{
-              width: r.baseRadius * 2,
-              height: r.baseRadius * 2,
-              ...GPU_HINTS,
-            }}
-            initial={{ scale: 1, opacity: 0 }}
-            animate={{
-              scale: [1, 1, 0.25, 0.04],
-              opacity: [0, r.opacity, r.opacity * 2.5, 0],
-            }}
-            transition={{
-              duration: 2.2,
-              delay: 0.2 + r.id * 0.05,
-              ease: [0.2, 0, 0.8, 1],
-              scale: { times: [0, 0.3, 0.75, 1] },
-              opacity: { times: [0, 0.2, 0.6, 1] },
-            }}
-          >
-            <div
-              className="wh-spin-vortex w-full h-full rounded-full"
-              style={{
-                border: `${r.border}px solid hsl(${r.hue}, 70%, 60% / ${r.opacity})`,
-                animationDuration: `${r.spinDuration}s`,
-                animationDirection: r.reverse ? 'reverse' : 'normal',
-              }}
-            />
-          </motion.div>
-        ))}
-      </div>
-
-      {/* C: Black hole center — grows from pinhole to dominate the frame */}
-      <motion.div
-        layout={false}
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        style={GPU_HINTS}
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: [0, 0.15, 0.6, 12], opacity: [0, 0.4, 0.9, 1] }}
-        transition={{ duration: 2.5, delay: 0.1, ease: [0.3, 0, 0.7, 1], times: [0, 0.15, 0.5, 1] }}
-      >
-        <div className="absolute -inset-8 rounded-full bg-gradient-to-br from-blue-600/25 via-violet-500/15 to-transparent blur-2xl wh-glow" />
-        <div
-          className="wh-spin-vortex absolute -inset-4 rounded-full border-2 border-blue-300/25"
-          style={{ animationDuration: '3s', boxShadow: '0 0 30px 8px rgba(147,197,253,0.12)' }}
-        />
-        <div className="relative h-20 w-20 rounded-full bg-black shadow-[0_0_80px_20px_rgba(0,0,0,0.9),0_0_160px_40px_rgba(30,58,138,0.08)]" />
-      </motion.div>
-
-      {/* ── THE OPENING UP CLIMAX ── */}
-
-      {/* D: Explosive point-origin white burst */}
-      <motion.div
-        layout={false}
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        style={GPU_HINTS}
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: [0, 0.01, 0.8, 50], opacity: [0, 0, 0.7, 1] }}
-        transition={{ duration: 0.7, delay: 2.3, ease: [0.1, 0, 0.2, 1] }}
-      >
-        <div className="h-4 w-4 rounded-full bg-white" style={{ boxShadow: '0 0 60px 30px rgba(255,255,255,0.8), 0 0 120px 60px rgba(147,197,253,0.4)' }} />
-      </motion.div>
-
-      {/* E: Anamorphic lens flare */}
-      <motion.div
-        layout={false}
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        style={GPU_HINTS}
-        initial={{ scaleX: 0, opacity: 0 }}
-        animate={{ scaleX: [0, 0.5, 1.5, 20], opacity: [0, 0.9, 1, 0.6] }}
-        transition={{ duration: 0.6, delay: 2.35, ease: [0.1, 0, 0.2, 1] }}
-      >
-        <div
-          className="h-[3px] w-[300px] -translate-x-1/2 rounded-full"
-          style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(147,197,253,0.3) 15%, rgba(255,255,255,0.95) 40%, white 50%, rgba(255,255,255,0.95) 60%, rgba(147,197,253,0.3) 85%, transparent 100%)',
-            boxShadow: '0 0 20px 6px rgba(147,197,253,0.3), 0 0 60px 20px rgba(147,197,253,0.15)',
-          }}
-        />
-      </motion.div>
-
-      {/* F: Diagonal lens flare streaks */}
-      {[0, 60, 120].map((deg) => (
-        <motion.div
-          key={`flare-${deg}`}
-          layout={false}
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-          style={GPU_HINTS}
-          initial={{ scale: 0, opacity: 0, rotate: deg }}
-          animate={{ scale: [0, 0.3, 8], opacity: [0, 0.7, 0], rotate: deg }}
-          transition={{ duration: 0.8, delay: 2.35, ease: 'easeOut' }}
-        >
-          <div className="h-[1px] w-[1600px] -translate-x-1/2 bg-gradient-to-r from-transparent via-white/70 to-transparent" />
-        </motion.div>
-      ))}
-
-      {/* G: Blinding full-frame white */}
-      <motion.div
-        layout={false}
-        className="absolute inset-0 bg-white"
-        style={GPU_HINTS}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: [0, 0, 1, 1, 1, 0.6] }}
-        transition={{ duration: 1.8, delay: 2.5, times: [0, 0.05, 0.12, 0.5, 0.75, 1] }}
-      />
-
-      {/* ── INTERFACE EMERGENCE ── */}
-
-      {/* H: White dissolves into the studio — radial wipe from center */}
-      <motion.div
-        layout={false}
-        className="theme-transition absolute inset-0 ws-shell"
-        style={GPU_HINTS}
-        initial={{ clipPath: 'circle(0% at 50% 50%)' }}
-        animate={{ clipPath: 'circle(75% at 50% 50%)' }}
-        transition={{ duration: 0.8, delay: 3.8, ease: [0.22, 1, 0.36, 1] }}
-        onAnimationComplete={onComplete}
-      >
-        {/* Soft residual light glow — fading */}
-        <motion.div
-          layout={false}
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-          style={GPU_HINTS}
-          initial={{ scale: 3, opacity: 0.4 }}
-          animate={{ scale: 2, opacity: 0 }}
-          transition={{ duration: 1.2, delay: 4.0, ease: 'easeOut' }}
-        >
-          <div className="h-96 w-96 rounded-full bg-gradient-to-br from-blue-400/15 via-white/8 to-transparent blur-3xl" />
-        </motion.div>
-
-        {/* Studio loading content */}
-        <motion.div
-          layout={false}
-          className="relative z-10 flex h-full w-full items-center justify-center"
-          initial={{ opacity: 0, scale: 0.94 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.8, delay: 4.2, ease: 'easeOut' }}
-        >
-          <div className="text-center">
-            <motion.div
-              layout={false}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 4.3 }}
-            >
-              <Sparkles className="mx-auto h-8 w-8 text-blue-400/60" />
-            </motion.div>
-            <motion.p
-              layout={false}
-              className="text-ws-soft mt-3 text-sm"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 4.5 }}
-            >
-              正在进入视频剪辑工作台...
-            </motion.p>
-          </div>
-        </motion.div>
-      </motion.div>
     </div>
   );
 };
+
+const PageFrame: React.FC<{
+  children: React.ReactNode;
+  className?: string;
+}> = ({ children, className = '' }) => (
+  <div className={`absolute inset-0 p-[2px] sm:p-1.5 lg:p-2 ${className}`}>
+    <div className="h-full rounded-[28px] border border-white/50 bg-white/68 shadow-[0_30px_90px_rgba(15,23,42,0.18)] backdrop-blur-xl">
+      {children}
+    </div>
+  </div>
+);
+
+const STATIC_HISTORY_ITEMS = [
+  {
+    title: '20s TikTok 开箱短片',
+    subtitle: '已生成镜头拆解、字幕草稿和导出参数',
+    time: '今天 14:28',
+    active: true,
+  },
+  {
+    title: '夏季促销合集',
+    subtitle: '等待确认口播节奏和英文标题',
+    time: '今天 11:04',
+    active: false,
+  },
+  {
+    title: '护肤品对比视频',
+    subtitle: '已完成关键帧理解，待导出成片',
+    time: '昨天 20:17',
+    active: false,
+  },
+] as const;
+
+const STATIC_TIMELINE_TRACKS = [
+  {
+    label: 'VIDEO',
+    clips: [
+      { name: 'Intro Hook', width: '20%', tone: 'from-sky-500 to-blue-500' },
+      { name: 'Benefit Demo', width: '28%', tone: 'from-indigo-500 to-blue-600' },
+      { name: 'Social Proof', width: '18%', tone: 'from-cyan-500 to-sky-500' },
+      { name: 'CTA', width: '14%', tone: 'from-amber-500 to-orange-500' },
+    ],
+  },
+  {
+    label: 'CAPTION',
+    clips: [
+      { name: '口播字幕', width: '34%', tone: 'from-emerald-500 to-teal-500' },
+      { name: '卖点强调', width: '22%', tone: 'from-fuchsia-500 to-pink-500' },
+      { name: '行动引导', width: '16%', tone: 'from-violet-500 to-fuchsia-500' },
+    ],
+  },
+] as const;
+
+const StaticDisclosure: React.FC<{
+  title: string;
+  status?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}> = ({ title, status, children, defaultOpen = true }) => (
+  <details open={defaultOpen} className="theme-transition group rounded-[18px] border ws-card">
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-2.5 px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="h-2 w-2 rounded-full bg-sky-500" />
+        <h4 className="text-ws-primary truncate text-[13px] font-medium">{title}</h4>
+      </div>
+      <div className="flex items-center gap-2.5">
+        {status ? (
+          <span className="text-ws-soft text-[10px] uppercase tracking-[0.22em]">{status}</span>
+        ) : null}
+        <ChevronDown className="text-ws-soft h-3.5 w-3.5 transition group-open:rotate-180" />
+      </div>
+    </summary>
+    <div className="text-ws-muted border-t border-ws px-3 py-2.5 text-[13px] leading-5">
+      {children}
+    </div>
+  </details>
+);
+
+const StaticUserBubble: React.FC<{ content: string }> = ({ content }) => (
+  <article className="flex w-full items-start justify-end gap-2.5 pl-10 sm:pl-24">
+    <div className="theme-transition w-fit max-w-[min(72%,34rem)] min-w-0 rounded-2xl bg-[color:var(--workspace-text-primary)] px-3 py-2.5 text-[color:var(--workspace-shell)] shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+      <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
+        <span className="text-white/60">You</span>
+      </div>
+      <p className="whitespace-pre-wrap break-words text-[12px] leading-5">{content}</p>
+    </div>
+    <div className="theme-transition ws-icon text-ws-secondary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
+      <MessageSquare className="h-3 w-3" />
+    </div>
+  </article>
+);
+
+const StaticAssistantCard: React.FC = () => (
+  <article className="flex w-full items-start justify-start gap-2.5 pr-3 sm:pr-8">
+    <div className="theme-transition ws-icon text-ws-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
+      <Bot className="h-3 w-3" />
+    </div>
+
+    <div className="theme-transition text-ws-secondary w-full max-w-[min(92%,52rem)] rounded-2xl border ws-card px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+      <div className="border-ws mb-3 flex items-center justify-between gap-3 border-b pb-3">
+        <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
+          <span className="text-ws-soft">Assistant</span>
+        </div>
+        <span className="text-ws-soft shrink-0 text-[10px] uppercase tracking-[0.18em]">
+          已完成
+        </span>
+      </div>
+
+      <div className="space-y-2.5">
+        <details open className="theme-transition group rounded-[14px] border ws-card-muted">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <Wrench className="text-ws-muted h-3.5 w-3.5" />
+              <p className="text-ws-primary truncate text-[12px] font-medium">
+                generate_edit_plan
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-ws-soft text-[10px]">今天 14:28</span>
+              <ChevronDown className="text-ws-soft h-3.5 w-3.5 transition group-open:rotate-180" />
+            </div>
+          </summary>
+          <div className="border-t border-ws px-3 py-2.5">
+            <pre className="theme-transition text-ws-muted whitespace-pre-wrap break-words rounded-[12px] border ws-card-contrast px-3 py-2 text-[11px] leading-5">
+{`{
+  "platform": "tiktok",
+  "goal": "20s 转化导向短视频",
+  "style": "口语化、快节奏、强钩子"
+}`}
+            </pre>
+          </div>
+        </details>
+
+        <div className="theme-transition rounded-[14px] border ws-card-muted px-3 py-2.5">
+          <p className="text-ws-primary text-[12px] font-medium">最终输出</p>
+          <p className="text-ws-secondary mt-2 whitespace-pre-wrap break-words text-[12px] leading-5">
+            已生成 4 段式结构：前 3 秒用强钩子切入，中段展示核心卖点和使用前后差异，结尾补上优惠与行动引导。
+          </p>
+        </div>
+      </div>
+    </div>
+  </article>
+);
+
+const StaticTimelineCard: React.FC = () => (
+  <div className="theme-transition ws-card rounded-[18px] border p-3">
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <div>
+        <p className="text-ws-soft text-[10px] font-medium uppercase tracking-[0.22em]">
+          Timeline Preview
+        </p>
+        <p className="text-ws-primary mt-1 text-[13px] font-semibold">20 秒剪辑时间线</p>
+      </div>
+      <button
+        type="button"
+        className="theme-transition ws-card-muted text-ws-secondary inline-flex items-center gap-2 rounded-full border border-ws px-3 py-1.5 text-[11px] font-medium"
+      >
+        <Wand2 className="h-3.5 w-3.5" />
+        调整节奏
+      </button>
+    </div>
+
+    <div className="theme-transition ws-card-contrast rounded-[16px] border px-3 py-3">
+      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[color:var(--workspace-text-soft)]">
+        <span>00:00</span>
+        <span>00:05</span>
+        <span>00:10</span>
+        <span>00:15</span>
+        <span>00:20</span>
+      </div>
+      <div className="space-y-3">
+        {STATIC_TIMELINE_TRACKS.map((track) => (
+          <div key={track.label} className="flex items-center gap-3">
+            <div className="text-ws-soft w-14 text-[10px] font-semibold uppercase tracking-[0.18em]">
+              {track.label}
+            </div>
+            <div className="flex min-w-0 flex-1 gap-2">
+              {track.clips.map((clip) => (
+                <div
+                  key={clip.name}
+                  className={`flex h-10 items-center rounded-[12px] bg-gradient-to-r ${clip.tone} px-3 text-[11px] font-medium text-white shadow-sm`}
+                  style={{ width: clip.width }}
+                >
+                  <span className="truncate">{clip.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+const PageBBack: React.FC = () => (
+  <PageFrame className="ws-shell bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.2),transparent_30%),linear-gradient(180deg,#eef4fb_0%,#e4edf9_100%)]">
+    <div className="theme-transition ws-shell h-full overflow-hidden rounded-[28px] border border-ws shadow-[0_36px_100px_rgba(15,23,42,0.14)]">
+      <div className="grid h-full min-h-0 lg:grid-cols-[272px_minmax(0,1fr)_368px]">
+        <aside className="theme-transition ws-panel hidden min-h-0 overflow-hidden lg:block">
+          <div className="flex h-full min-h-0 flex-col px-3.5 py-3">
+            <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-ws-soft flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.24em]">
+                  <Clapperboard className="h-3 w-3" />
+                  Caption Studio
+                </div>
+                <h1 className="text-ws-primary mt-1 text-[17px] font-semibold">桌面工作台</h1>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <ThemeToggle />
+                <button
+                  type="button"
+                  className="theme-transition ws-card text-ws-secondary flex h-9 w-9 items-center justify-center rounded-full border"
+                  aria-label="收起历史侧栏"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <Link
+                  to="/"
+                  className="theme-transition ws-card text-ws-secondary shrink-0 rounded-full border px-2.5 py-1.5 text-[11px] font-medium"
+                >
+                  返回
+                </Link>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="theme-transition mb-3 inline-flex w-full items-center justify-center rounded-xl border border-ws bg-[var(--workspace-card)] px-4 py-2.5 text-[12px] font-medium text-[var(--workspace-text-secondary)]"
+            >
+              <RefreshCcw className="mr-2 h-4 w-4" />
+              新建任务
+            </button>
+
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {STATIC_HISTORY_ITEMS.map((item) => (
+                <button
+                  key={item.title}
+                  type="button"
+                  className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                    item.active
+                      ? 'border-sky-500/40 bg-sky-500/10 shadow-sm'
+                      : 'theme-transition border-ws ws-card hover:border-ws-strong'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-ws-primary truncate text-sm font-medium">{item.title}</p>
+                    <span className="text-ws-soft shrink-0 text-[11px]">{item.time}</span>
+                  </div>
+                  <p className="text-ws-muted mt-2 line-clamp-2 text-xs leading-5">
+                    {item.subtitle}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        <section className="theme-transition ws-shell flex min-h-0 flex-col overflow-hidden">
+          <div className="theme-transition ws-shell min-h-0 flex-1 overflow-hidden px-6 py-5">
+            <div className="flex min-h-full flex-col gap-3">
+              <StaticAssistantCard />
+              <StaticUserBubble content="按 TikTok 节奏再压缩一点，前 3 秒更直接，结尾把优惠信息单独抬出来。" />
+              <div className="flex w-full items-start gap-2.5 pr-3 sm:pr-8">
+                <div className="theme-transition ws-icon text-ws-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
+                  <Sparkles className="h-3 w-3" />
+                </div>
+                <div className="flex w-full max-w-[min(92%,52rem)] flex-col gap-3">
+                  <div className="theme-transition rounded-2xl border ws-card px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+                    <div className="border-ws mb-3 flex items-center justify-between gap-3 border-b pb-3">
+                      <span className="text-ws-soft text-[9px] uppercase tracking-[0.18em]">
+                        Assistant
+                      </span>
+                      <span className="text-ws-soft text-[10px] uppercase tracking-[0.18em]">
+                        已更新
+                      </span>
+                    </div>
+                    <p className="text-ws-secondary text-[12px] leading-5">
+                      已将节奏压缩到 20 秒内，开头改成“3 秒看到效果”，并把优惠 CTA 独立成最后一段。
+                    </p>
+                  </div>
+                  <StaticTimelineCard />
+                </div>
+              </div>
+              <div className="h-px shrink-0" />
+            </div>
+          </div>
+
+          <div className="theme-transition ws-shell shrink-0 px-6 pb-5 pt-4">
+            <div className="theme-transition ws-card mx-auto min-h-[96px] w-full max-w-[960px] rounded-[28px] border px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="theme-transition ws-card-muted text-ws-secondary flex h-9 w-9 items-center justify-center rounded-full border border-ws"
+                  >
+                    <Upload className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="theme-transition ws-card-muted text-ws-secondary rounded-full border border-ws px-3 py-1.5 text-[11px] font-medium"
+                  >
+                    TikTok
+                  </button>
+                  <button
+                    type="button"
+                    className="theme-transition ws-card-muted text-ws-secondary rounded-full border border-ws px-3 py-1.5 text-[11px] font-medium"
+                  >
+                    Keyframe
+                  </button>
+                </div>
+                <span className="text-ws-soft text-[10px] uppercase tracking-[0.18em]">
+                  Instant
+                </span>
+              </div>
+              <div className="flex items-end gap-3">
+                <div className="theme-transition ws-card-contrast flex-1 rounded-[22px] border px-4 py-3">
+                  <p className="text-ws-secondary text-[13px] leading-6">
+                    帮我输出最终字幕版本，并保持结尾 CTA 与时间线一致。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-[color:var(--workspace-text-primary)] text-[color:var(--workspace-shell)] shadow-[0_10px_24px_rgba(0,0,0,0.22)]"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside className="theme-transition ws-panel hidden min-h-0 overflow-hidden lg:block">
+          <div className="flex h-full min-h-0 flex-col px-3.5 py-3">
+            <div className="theme-transition ws-card shrink-0 rounded-[18px] border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="theme-transition ws-icon text-ws-secondary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-ws-primary truncate text-[13px] font-semibold">
+                      20s TikTok 开箱短片
+                    </p>
+                  </div>
+                </div>
+                <span className="theme-transition ws-chip text-ws-muted shrink-0 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em]">
+                  completed
+                </span>
+              </div>
+              <p className="text-ws-muted mt-1.5 line-clamp-2 text-[11px] leading-4">
+                当前轮次结束后，保留剪辑方案、字幕、导出命令和成片下载入口。
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pt-2 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <StaticDisclosure title="剪辑状态" status="进行中">
+                <div className="space-y-2 text-[12px]">
+                  {[
+                    ['关键帧理解', '已完成', '识别出产品展示、近景细节和优惠口播节点。'],
+                    ['字幕草稿', '已完成', '已按口语化风格重写，并控制在 20 秒节奏内。'],
+                    ['导出成片', '待执行', '等待确认最终 CTA 后开始拼接导出。'],
+                  ].map(([label, state, detail]) => (
+                    <div key={label} className="theme-transition ws-card-muted rounded-[14px] border px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-ws-secondary text-[12px] font-medium">{label}</p>
+                        <span className="text-ws-soft text-[10px] uppercase tracking-[0.18em]">
+                          {state}
+                        </span>
+                      </div>
+                      <p className="text-ws-muted mt-1 text-[11px] leading-4">{detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </StaticDisclosure>
+
+              <StaticDisclosure title="当前产物" status="已同步">
+                <div className="space-y-2">
+                  <div className="theme-transition group rounded-[14px] border ws-card-muted">
+                    <div className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="text-ws-soft text-[11px] uppercase tracking-[0.18em]">
+                        剪辑草稿
+                      </div>
+                      <ChevronDown className="text-ws-soft h-3.5 w-3.5" />
+                    </div>
+                    <div className="border-ws border-t px-3 py-2">
+                      <pre className="text-ws-secondary whitespace-pre-wrap break-words font-sans text-[12px]">
+{`00:00-00:03 强钩子
+00:03-00:11 产品卖点
+00:11-00:16 使用前后对比
+00:16-00:20 优惠 CTA`}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div className="theme-transition group rounded-[14px] border ws-card-muted">
+                    <div className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="text-ws-soft text-[11px] uppercase tracking-[0.18em]">
+                        导出成片
+                      </div>
+                      <ChevronDown className="text-ws-soft h-3.5 w-3.5" />
+                    </div>
+                    <div className="border-ws border-t space-y-2 px-3 py-2">
+                      <p className="text-ws-secondary break-words text-[12px]">
+                        tiktok-product-cut-v4.mp4
+                      </p>
+                      <p className="text-ws-muted text-[12px] leading-5">
+                        H.264，1080x1920，已套用快节奏转场与字幕安全区。
+                      </p>
+                      <button
+                        type="button"
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[color:var(--workspace-text-primary)] px-3 py-2.5 text-[12px] font-medium text-[color:var(--workspace-shell)]"
+                      >
+                        <Download className="h-4 w-4" />
+                        导出剪辑视频
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </StaticDisclosure>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </PageFrame>
+);
 
 export default Home;

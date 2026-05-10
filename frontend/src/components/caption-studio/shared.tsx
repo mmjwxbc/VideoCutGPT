@@ -143,6 +143,20 @@ export const getWorkflowStatusLabel = (status: string) => {
   }
 };
 
+export const getSessionStatusLabel = (status?: string) => {
+  switch (status) {
+    case 'completed':
+      return '已完成';
+    case 'processing':
+      return '进行中';
+    case 'error':
+      return '失败';
+    case 'idle':
+    default:
+      return '待命';
+  }
+};
+
 export const Panel: React.FC<PanelProps> = ({
   title,
   eyebrow,

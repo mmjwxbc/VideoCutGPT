@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronDown, Download, Sparkles } from 'lucide-react';
 
-import { Panel, WorkflowStateRow, WorkflowStepCard, getWorkflowStatusLabel, getWorkflowStatusTone } from './shared';
+import { Panel, WorkflowStateRow, WorkflowStepCard, getSessionStatusLabel, getWorkflowStatusLabel, getWorkflowStatusTone } from './shared';
 import { CaptionAssistantSession } from '../../types';
 import { Button } from '../ui/button';
 import { captionSessionExportedVideoUrl } from '../../api/api';
@@ -92,7 +92,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                 </div>
               </div>
               <span className="theme-transition ws-chip text-ws-muted shrink-0 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em]">
-                {session?.status || 'idle'}
+                {getSessionStatusLabel(session?.status)}
               </span>
             </div>
             <p className="text-ws-muted mt-1.5 line-clamp-2 text-[11px] leading-4" aria-live="polite">

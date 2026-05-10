@@ -1,9 +1,19 @@
 import React from 'react';
+import { Wand2 } from 'lucide-react';
 
 import ChatComposer, { ChatComposerOption } from '../ChatComposer';
 import MobileDrawerTabs, { DrawerType } from './MobileDrawerTabs';
 import { AgentTurn, AnalysisMode, CaptionAssistantSession } from '../../types';
 import { AssistantTurnCard, ChatBubble, SessionListItem, WorkflowStateRow } from './shared';
+
+interface TimelinePreviewTrack {
+  label: string;
+  clips: Array<{
+    name: string;
+    width: string;
+    tone: string;
+  }>;
+}
 
 interface ConversationPanelProps {
   activeDrawer: DrawerType | null;
@@ -51,6 +61,8 @@ interface ConversationPanelProps {
   isSubmitting: boolean;
   activeSessionTitle: string;
   workflowRows: WorkflowStateRow[];
+  timelineTracks: TimelinePreviewTrack[];
+  onApplyTimelineSuggestion: () => void;
 }
 
 const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -94,6 +106,8 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   isSubmitting,
   activeSessionTitle,
   workflowRows,
+  timelineTracks,
+  onApplyTimelineSuggestion,
 }) => (
   <section className="theme-transition ws-shell flex min-h-0 flex-col overflow-hidden">
     {/* Mobile drawer tabs (replaces old tab toggle) */}
@@ -157,6 +171,64 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
 
               {pendingUserPrompt && !turns.length ? (
                 <ChatBubble content={pendingUserPrompt} />
+              ) : null}
+
+              {timelineTracks.length ? (
+                <div className="flex w-full items-start gap-2.5 pr-3 sm:pr-8">
+                  <div className="theme-transition ws-icon text-ws-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
+                    <Wand2 className="h-3 w-3" />
+                  </div>
+                  <div className="theme-transition ws-card w-full max-w-[min(92%,52rem)] rounded-[18px] border p-3 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-ws-soft text-[10px] font-medium uppercase tracking-[0.22em]">
+                          Timeline Preview
+                        </p>
+                        <p className="text-ws-primary mt-1 text-[13px] font-semibold">
+                          {session ? `${activeSessionTitle} 时间线预览` : '时间线预览'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onApplyTimelineSuggestion}
+                        className="theme-transition ws-card-muted text-ws-secondary inline-flex items-center gap-2 rounded-full border border-ws px-3 py-1.5 text-[11px] font-medium"
+                      >
+                        <Wand2 className="h-3.5 w-3.5" />
+                        调整节奏
+                      </button>
+                    </div>
+
+                    <div className="theme-transition ws-card-contrast rounded-[16px] border px-3 py-3">
+                      <div className="mb-3 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-[color:var(--workspace-text-soft)]">
+                        <span>00:00</span>
+                        <span>00:05</span>
+                        <span>00:10</span>
+                        <span>00:15</span>
+                        <span>00:20</span>
+                      </div>
+                      <div className="space-y-3">
+                        {timelineTracks.map((track) => (
+                          <div key={track.label} className="flex items-center gap-3">
+                            <div className="text-ws-soft w-14 text-[10px] font-semibold uppercase tracking-[0.18em]">
+                              {track.label}
+                            </div>
+                            <div className="flex min-w-0 flex-1 gap-2">
+                              {track.clips.map((clip) => (
+                                <div
+                                  key={`${track.label}-${clip.name}`}
+                                  className={`flex h-10 items-center rounded-[12px] bg-gradient-to-r ${clip.tone} px-3 text-[11px] font-medium text-white shadow-sm`}
+                                  style={{ width: clip.width }}
+                                >
+                                  <span className="truncate">{clip.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ) : null}
             </>
           )}

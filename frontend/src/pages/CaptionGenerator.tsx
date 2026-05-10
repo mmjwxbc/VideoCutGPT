@@ -31,6 +31,21 @@ const SSE_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTIVE_SESSION_STORAGE_KEY = 'caption-active-session-id';
 const ACCESS_RECOVERY_MESSAGE = '检测到登录状态异常，无法访问会话接口。请重新认证后重试。';
 const ACCESS_REAUTH_PATH = '/api/access/complete';
+const TIMELINE_TONES = [
+  'from-sky-500 to-blue-500',
+  'from-indigo-500 to-blue-600',
+  'from-cyan-500 to-sky-500',
+  'from-amber-500 to-orange-500',
+] as const;
+
+interface TimelinePreviewTrack {
+  label: string;
+  clips: Array<{
+    name: string;
+    width: string;
+    tone: string;
+  }>;
+}
 
 type UploadPreviewStatus = 'idle' | 'uploading' | 'processing' | 'done' | 'failed';
 
@@ -84,6 +99,71 @@ const isLoopbackHostname = (hostname: string) =>
   hostname === '[::1]' ||
   hostname === '127.0.0.1' ||
   hostname.startsWith('127.');
+
+const normalizeTimelineLines = (value: string) =>
+  value
+    .split('\n')
+    .map((line) => line.replace(/^[\s\-*•\d.():]+/, '').trim())
+    .filter(Boolean);
+
+const buildTimelineClips = (items: string[]) => {
+  if (!items.length) {
+    return [];
+  }
+  const clipCount = Math.min(items.length, 4);
+  const baseWidth = Math.floor(80 / clipCount);
+
+  return items.slice(0, clipCount).map((item, index) => ({
+    name: item,
+    width: `${index === clipCount - 1 ? 80 - baseWidth * (clipCount - 1) : baseWidth}%`,
+    tone: TIMELINE_TONES[index % TIMELINE_TONES.length],
+  }));
+};
+
+const buildTimelinePreviewTracks = (
+  currentSession: CaptionAssistantSession | null,
+  workflowRows: ReturnType<typeof getWorkflowRows>,
+): TimelinePreviewTrack[] => {
+  if (!currentSession?.global_editing_state) {
+    return [];
+  }
+
+  const state = currentSession.global_editing_state;
+  const latestTurn = currentSession.turns[currentSession.turns.length - 1];
+  const primaryLines = [
+    state.subtitle_draft,
+    state.editing_plan,
+    latestTurn?.final_text,
+    state.video_summary,
+    state.request_summary,
+  ]
+    .flatMap((item) => normalizeTimelineLines(item || ''))
+    .slice(0, 4);
+  const workflowLines = workflowRows
+    .filter(({ item }) => item.requested || item.status !== 'idle')
+    .map(({ item }) => `${item.label} ${item.status === 'completed' ? '已完成' : item.detail || ''}`.trim())
+    .slice(0, 4);
+
+  const tracks: TimelinePreviewTrack[] = [];
+  const primaryClips = buildTimelineClips(primaryLines);
+  const workflowClips = buildTimelineClips(workflowLines);
+
+  if (primaryClips.length) {
+    tracks.push({
+      label: state.subtitle_draft.trim() ? 'CAPTION' : 'VIDEO',
+      clips: primaryClips,
+    });
+  }
+
+  if (workflowClips.length) {
+    tracks.push({
+      label: 'STATUS',
+      clips: workflowClips,
+    });
+  }
+
+  return tracks;
+};
 
 const CaptionGenerator: React.FC = () => {
   const [videos, setVideos] = useState<File[]>([]);
@@ -790,6 +870,10 @@ const CaptionGenerator: React.FC = () => {
       })),
     [uploadProgress, videoPreviewUrls, videos],
   );
+  const timelineTracks = useMemo(
+    () => buildTimelinePreviewTracks(session, workflowRows),
+    [session, workflowRows],
+  );
   const errorActions = accessRecoveryRequired ? (
     <>
       <button
@@ -809,76 +893,84 @@ const CaptionGenerator: React.FC = () => {
     </>
   ) : null;
   return (
-    <div className="ws-shell relative h-screen min-h-0 overflow-hidden">
-      <div
-        className={`grid h-full min-h-0 ${historySidebarCollapsed
-            ? 'lg:grid-cols-[72px_minmax(0,1fr)_368px]'
-            : 'lg:grid-cols-[272px_minmax(0,1fr)_368px]'
-          }`}
-      >
-        <HistorySidebar
-          collapsed={historySidebarCollapsed}
-          sessionHistory={sessionHistory}
-          activeSessionId={session?.session_id}
-          loadingSessionId={loadingSessionId}
-          onExpand={() => setHistorySidebarCollapsed(false)}
-          onCollapse={() => setHistorySidebarCollapsed(true)}
-          onReset={resetSession}
-          onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
-        />
+    <div className="ws-shell relative h-screen min-h-0 overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(59,130,246,0.2),transparent_30%),linear-gradient(180deg,#eef4fb_0%,#e4edf9_100%)] p-[2px] sm:p-1.5 lg:p-2">
+      <div className="h-full rounded-[28px] border border-white/50 bg-white/68 shadow-[0_30px_90px_rgba(15,23,42,0.18)] backdrop-blur-xl">
+        <div className="theme-transition ws-shell h-full overflow-hidden rounded-[28px] border border-ws shadow-[0_36px_100px_rgba(15,23,42,0.14)]">
+          <div
+            className={`grid h-full min-h-0 ${historySidebarCollapsed
+                ? 'lg:grid-cols-[72px_minmax(0,1fr)_368px]'
+                : 'lg:grid-cols-[272px_minmax(0,1fr)_368px]'
+              }`}
+          >
+            <HistorySidebar
+              collapsed={historySidebarCollapsed}
+              sessionHistory={sessionHistory}
+              activeSessionId={session?.session_id}
+              loadingSessionId={loadingSessionId}
+              onExpand={() => setHistorySidebarCollapsed(false)}
+              onCollapse={() => setHistorySidebarCollapsed(true)}
+              onReset={resetSession}
+              onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
+            />
 
-        <ConversationPanel
-          activeDrawer={activeDrawer}
-          onToggleDrawer={(type) => setActiveDrawer((prev) => (prev === type ? null : type))}
-          onCloseDrawer={() => setActiveDrawer(null)}
-          sessionHistory={sessionHistory}
-          activeSessionId={session?.session_id}
-          loadingSessionId={loadingSessionId}
-          isSessionLoading={isSessionLoading}
-          onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
-          onReset={resetSession}
-          threadRef={threadRef}
-          session={session}
-          turns={turns}
-          pendingUserPrompt={pendingUserPrompt}
-          isRunning={isRunning}
-          submitDisabled={submitDisabled}
-          draftPrompt={draftPrompt}
-          setDraftPrompt={setDraftPrompt}
-          submitPrompt={(value) => void submitPrompt(value)}
-          analysisMode={analysisMode}
-          setAnalysisMode={setAnalysisMode}
-          platform={platform}
-          platformOptions={PLATFORM_OPTIONS}
-          setPlatform={setPlatform}
-          composerMode={composerMode}
-          uploadInputRef={uploadInputRef}
-          uploadPreviews={uploadPreviews}
-          selectedUploadIndex={selectedUploadIndex}
-          onSelectUpload={setSelectedUploadIndex}
-          onMoveUpload={moveUpload}
-          clearUploadedVideo={clearUploadedVideo}
-          productManual={productManual}
-          setProductManual={setProductManual}
-          sellingPointsOpen={sellingPointsOpen}
-          setSellingPointsOpen={setSellingPointsOpen}
-          accessRecoveryRequired={accessRecoveryRequired}
-          error={
-            sseTimedOut && !error
-              ? 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。'
-              : error
-          }
-          errorActions={errorActions}
-          isSubmitting={isSubmitting}
-          activeSessionTitle={activeSessionTitle}
-          workflowRows={workflowRows}
-        />
+            <ConversationPanel
+              activeDrawer={activeDrawer}
+              onToggleDrawer={(type) => setActiveDrawer((prev) => (prev === type ? null : type))}
+              onCloseDrawer={() => setActiveDrawer(null)}
+              sessionHistory={sessionHistory}
+              activeSessionId={session?.session_id}
+              loadingSessionId={loadingSessionId}
+              isSessionLoading={isSessionLoading}
+              onOpenSession={(sessionId) => void openSessionFromHistory(sessionId)}
+              onReset={resetSession}
+              threadRef={threadRef}
+              session={session}
+              turns={turns}
+              pendingUserPrompt={pendingUserPrompt}
+              isRunning={isRunning}
+              submitDisabled={submitDisabled}
+              draftPrompt={draftPrompt}
+              setDraftPrompt={setDraftPrompt}
+              submitPrompt={(value) => void submitPrompt(value)}
+              analysisMode={analysisMode}
+              setAnalysisMode={setAnalysisMode}
+              platform={platform}
+              platformOptions={PLATFORM_OPTIONS}
+              setPlatform={setPlatform}
+              composerMode={composerMode}
+              uploadInputRef={uploadInputRef}
+              uploadPreviews={uploadPreviews}
+              selectedUploadIndex={selectedUploadIndex}
+              onSelectUpload={setSelectedUploadIndex}
+              onMoveUpload={moveUpload}
+              clearUploadedVideo={clearUploadedVideo}
+              productManual={productManual}
+              setProductManual={setProductManual}
+              sellingPointsOpen={sellingPointsOpen}
+              setSellingPointsOpen={setSellingPointsOpen}
+              accessRecoveryRequired={accessRecoveryRequired}
+              error={
+                sseTimedOut && !error
+                  ? 'SSE 连接 30 分钟没有新事件，已回查后台状态。任务可能仍在后台运行。'
+                  : error
+              }
+              errorActions={errorActions}
+              isSubmitting={isSubmitting}
+              activeSessionTitle={activeSessionTitle}
+              workflowRows={workflowRows}
+              timelineTracks={timelineTracks}
+              onApplyTimelineSuggestion={() =>
+                setDraftPrompt('按当前时间线再压缩一点，前 3 秒更直接，结尾把 CTA 单独抬出来。')
+              }
+            />
 
-        <WorkspaceSidebar
-          session={session}
-          activeSessionTitle={activeSessionTitle}
-          workflowRows={workflowRows}
-        />
+            <WorkspaceSidebar
+              session={session}
+              activeSessionTitle={activeSessionTitle}
+              workflowRows={workflowRows}
+            />
+          </div>
+        </div>
       </div>
 
       <input
