@@ -48,7 +48,7 @@ interface AssistantTurnCardProps {
   isActive: boolean;
 }
 
-const panelClassName = 'border border-slate-800 bg-[#111111]';
+const panelClassName = 'theme-transition border ws-card';
 
 export const formatTimestamp = (value: string) =>
   new Date(value).toLocaleString('zh-CN', {
@@ -153,13 +153,13 @@ export const Panel: React.FC<PanelProps> = ({
 }) => (
   <section className={`${panelClassName} flex min-h-0 flex-col ${className}`}>
     {hideHeader ? null : (
-      <div className="border-b border-slate-800 px-3.5 py-2.5">
+      <div className="border-b border-ws px-3.5 py-2.5">
         {eyebrow ? (
-          <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
+          <p className="text-ws-soft text-[10px] font-medium uppercase tracking-[0.22em]">
             {eyebrow}
           </p>
         ) : null}
-        <h2 className={`text-[13px] font-semibold text-slate-100 ${eyebrow ? 'mt-1.5' : ''}`}>
+        <h2 className={`text-ws-primary text-[13px] font-semibold ${eyebrow ? 'mt-1.5' : ''}`}>
           {title}
         </h2>
       </div>
@@ -170,13 +170,13 @@ export const Panel: React.FC<PanelProps> = ({
 
 export const ChatBubble: React.FC<ChatBubbleProps> = ({ content }) => (
   <article className="flex w-full items-start gap-2.5 justify-end pl-10 sm:pl-24">
-    <div className="w-fit max-w-[min(72%,34rem)] min-w-0 rounded-2xl bg-[#2a2a2a] px-3 py-2.5 text-white shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+    <div className="theme-transition w-fit max-w-[min(72%,34rem)] min-w-0 rounded-2xl bg-[color:var(--workspace-text-primary)] px-3 py-2.5 text-[color:var(--workspace-shell)] shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
       <div className="mb-1 flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
         <span className="text-white/60">You</span>
       </div>
       <p className="whitespace-pre-wrap break-words text-[12px] leading-5">{content}</p>
     </div>
-    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-300 shadow-sm">
+    <div className="theme-transition ws-icon text-ws-secondary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
       <User className="h-3 w-3" />
     </div>
   </article>
@@ -200,21 +200,21 @@ export const WorkflowStepCard: React.FC<WorkflowStepCardProps> = ({
   return (
     <details
       open={defaultOpen}
-      className="group rounded-[18px] border border-slate-800 bg-[#171717]"
+      className="theme-transition group rounded-[18px] border ws-card"
     >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2.5 px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${statusClassName}`} />
-          <h4 className="truncate text-[13px] font-medium text-slate-100">{title}</h4>
+          <h4 className="text-ws-primary truncate text-[13px] font-medium">{title}</h4>
         </div>
         <div className="flex items-center gap-2.5">
-          <span className="text-[10px] uppercase tracking-[0.22em] text-slate-500">
+          <span className="text-ws-soft text-[10px] uppercase tracking-[0.22em]">
             {statusLabel}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
+          <ChevronDown className="text-ws-soft h-3.5 w-3.5 transition group-open:rotate-180" />
         </div>
       </summary>
-      <div className="border-t border-slate-800 px-3 py-2.5 text-[13px] leading-5 text-slate-400">
+      <div className="text-ws-muted border-t border-ws px-3 py-2.5 text-[13px] leading-5">
         {children}
       </div>
     </details>
@@ -236,19 +236,19 @@ const TurnEventDisclosure: React.FC<{
 }) => (
   <details
     open={defaultOpen}
-    className="group rounded-[14px] border border-slate-800 bg-[#1b1b1b]"
+    className="theme-transition group rounded-[14px] border ws-card-muted"
   >
     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
       <div className="flex min-w-0 items-center gap-2">
         {icon}
-        <p className="truncate text-[12px] font-medium text-slate-100">{title}</p>
+        <p className="text-ws-primary truncate text-[12px] font-medium">{title}</p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <span className="text-[10px] text-slate-500">{formatTimestamp(timestamp)}</span>
-        <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition group-open:rotate-180" />
+        <span className="text-ws-soft text-[10px]">{formatTimestamp(timestamp)}</span>
+        <ChevronDown className="text-ws-soft h-3.5 w-3.5 transition group-open:rotate-180" />
       </div>
     </summary>
-    <div className="border-t border-slate-800 px-3 py-2.5">
+    <div className="border-t border-ws px-3 py-2.5">
       {children}
     </div>
   </details>
@@ -261,10 +261,10 @@ const renderTurnEvent = (event: TurnEventItem, index: number, defaultOpen: boole
         key={`${event.created_at}-${index}`}
         title={event.tool_name}
         timestamp={event.created_at}
-        icon={<Wrench className="h-3.5 w-3.5 text-slate-400" />}
+        icon={<Wrench className="text-ws-muted h-3.5 w-3.5" />}
         defaultOpen={defaultOpen}
       >
-        <pre className="whitespace-pre-wrap break-words rounded-[12px] border border-slate-800 bg-[#121212] px-3 py-2 text-[11px] leading-5 text-slate-400">
+        <pre className="theme-transition text-ws-muted whitespace-pre-wrap break-words rounded-[12px] border ws-card-contrast px-3 py-2 text-[11px] leading-5">
           {event.arguments || '{}'}
         </pre>
       </TurnEventDisclosure>
@@ -279,7 +279,7 @@ const renderTurnEvent = (event: TurnEventItem, index: number, defaultOpen: boole
         timestamp={event.created_at}
         defaultOpen={defaultOpen}
       >
-        <p className="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-400">
+        <p className="text-ws-muted whitespace-pre-wrap break-words text-[12px] leading-5">
           {event.content}
         </p>
       </TurnEventDisclosure>
@@ -299,16 +299,16 @@ export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
 
   return (
     <article className="flex w-full items-start gap-2.5 justify-start pr-3 sm:pr-8">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-100 shadow-sm">
+      <div className="theme-transition ws-icon text-ws-primary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
         <Bot className="h-3 w-3" />
       </div>
 
-      <div className="w-full max-w-[min(92%,52rem)] rounded-2xl border border-slate-800 bg-[#161616] px-3 py-2.5 text-slate-300 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
-        <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+      <div className="theme-transition text-ws-secondary w-full max-w-[min(92%,52rem)] rounded-2xl border ws-card px-3 py-2.5 shadow-[0_10px_24px_rgba(0,0,0,0.18)]">
+        <div className="border-ws mb-3 flex items-center justify-between gap-3 border-b pb-3">
           <div className="flex items-center gap-2 text-[9px] uppercase tracking-[0.18em]">
-            <span className="text-slate-500">Assistant</span>
+            <span className="text-ws-soft">Assistant</span>
           </div>
-          <span className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-slate-500">
+          <span className="text-ws-soft shrink-0 text-[10px] uppercase tracking-[0.18em]">
             {turn.status === 'completed'
               ? '已完成'
               : turn.status === 'error'
@@ -326,7 +326,7 @@ export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
             )}
           </div>
         ) : isActive ? (
-          <div className="rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5 text-[12px] text-slate-400">
+          <div className="theme-transition text-ws-muted rounded-[14px] border ws-card-muted px-3 py-2.5 text-[12px]">
             当前轮次已创建，等待 Agent 产出过程事件。
           </div>
         ) : null}
@@ -338,9 +338,9 @@ export const AssistantTurnCard: React.FC<AssistantTurnCardProps> = ({
         ) : null}
 
         {finalEvent?.content || turn.final_text ? (
-          <div className="mt-3 rounded-[14px] border border-slate-800 bg-[#1b1b1b] px-3 py-2.5">
-            <p className="text-[12px] font-medium text-slate-100">最终输出</p>
-            <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-300">
+          <div className="theme-transition mt-3 rounded-[14px] border ws-card-muted px-3 py-2.5">
+            <p className="text-ws-primary text-[12px] font-medium">最终输出</p>
+            <p className="text-ws-secondary mt-2 whitespace-pre-wrap break-words text-[12px] leading-5">
               {finalEvent?.content || turn.final_text}
             </p>
           </div>

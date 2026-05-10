@@ -23,19 +23,19 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({
   title,
   children,
   defaultOpen = false,
-  accentClassName = 'text-slate-500',
+  accentClassName = 'text-ws-soft',
 }) => (
   <details
     open={defaultOpen}
-    className="group rounded-[14px] border border-slate-800 bg-[#111111]"
+    className="theme-transition group rounded-[14px] border ws-card-muted"
   >
     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
       <div className={`text-[11px] uppercase tracking-[0.18em] ${accentClassName}`}>
         {title}
       </div>
-      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-500 transition group-open:rotate-180" />
+      <ChevronDown className="text-ws-soft h-3.5 w-3.5 shrink-0 transition group-open:rotate-180" />
     </summary>
-    <div className="border-t border-slate-800 px-3 py-2">
+    <div className="border-ws border-t px-3 py-2">
       {children}
     </div>
   </details>
@@ -71,33 +71,31 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   );
 
   return (
-    <aside
-      className="hidden min-h-0 overflow-hidden bg-[#0f0f0f] lg:block"
-    >
+    <aside className="theme-transition ws-panel hidden min-h-0 overflow-hidden lg:block">
       <Panel
         title=""
-        className="h-full overflow-hidden border-0 bg-[#0f0f0f]"
+        className="h-full overflow-hidden border-0 bg-transparent shadow-none"
         bodyClassName="flex min-h-0 flex-1 flex-col gap-2 p-0"
         hideHeader
       >
         <div className="flex h-full min-h-0 flex-col px-3.5 py-3">
-          <div className="shrink-0 rounded-[18px] border border-slate-800 bg-[#171717] px-3 py-2">
+          <div className="theme-transition ws-card shrink-0 rounded-[18px] border px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#111111] text-slate-300 shadow-sm">
+                <div className="theme-transition ws-icon text-ws-secondary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
                   <Sparkles className="h-3.5 w-3.5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="truncate text-[13px] font-semibold text-slate-100">
+                  <p className="text-ws-primary truncate text-[13px] font-semibold">
                     {session ? activeSessionTitle : '全局剪辑状态'}
                   </p>
                 </div>
               </div>
-              <span className="shrink-0 rounded-full border border-slate-700 bg-[#111111] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-400">
+              <span className="theme-transition ws-chip text-ws-muted shrink-0 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em]">
                 {session?.status || 'idle'}
               </span>
             </div>
-            <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-slate-400" aria-live="polite">
+            <p className="text-ws-muted mt-1.5 line-clamp-2 text-[11px] leading-4" aria-live="polite">
               {state?.request_summary || '当前轮次结束后，右侧会展示提交后的全局视频剪辑状态。'}
             </p>
           </div>
@@ -110,34 +108,34 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                   status={session?.status === 'completed' ? 'completed' : 'active'}
                   defaultOpen
                 >
-                  <div className="space-y-2 text-[12px] leading-5 text-slate-400">
-                    <div className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2">
-                      <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                  <div className="text-ws-muted space-y-2 text-[12px] leading-5">
+                    <div className="theme-transition ws-card-muted rounded-[14px] border px-3 py-2">
+                      <div className="text-ws-soft text-[11px] uppercase tracking-[0.18em]">
                         Request
                       </div>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
+                      <p className="text-ws-secondary mt-1 whitespace-pre-wrap break-words text-[12px]">
                         {state.request_summary || '暂无'}
                       </p>
                     </div>
                     {workflowRows.map(({ key, item }: WorkflowStateRow) => (
                       <div
                         key={key}
-                        className="rounded-[14px] border border-slate-800 bg-[#111111] px-3 py-2"
+                        className="theme-transition ws-card-muted rounded-[14px] border px-3 py-2"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex min-w-0 items-center gap-2">
                             <span
                               className={`h-2 w-2 rounded-full ${getWorkflowStatusTone(item.status)}`}
                             />
-                            <p className="truncate text-[12px] font-medium text-slate-200">
+                            <p className="text-ws-secondary truncate text-[12px] font-medium">
                               {item.label}
                             </p>
                           </div>
-                          <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                          <span className="text-ws-soft text-[10px] uppercase tracking-[0.18em]">
                             {getWorkflowStatusLabel(item.status)}
                           </span>
                         </div>
-                        <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                        <p className="text-ws-muted mt-1 text-[11px] leading-4">
                           {item.detail || '暂无状态说明'}
                         </p>
                       </div>
@@ -150,38 +148,38 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                   status={session?.status === 'completed' ? 'completed' : 'active'}
                   defaultOpen
                 >
-                  <div className="space-y-2 text-[12px] leading-5 text-slate-400">
+                  <div className="text-ws-muted space-y-2 text-[12px] leading-5">
                     {subtitleDraft.trim() ? (
-                      <ArtifactCard title="字幕草稿" defaultOpen>
-                        <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
+                      <ArtifactCard title="剪辑草稿" defaultOpen>
+                        <pre className="text-ws-secondary mt-1 whitespace-pre-wrap break-words font-sans text-[12px]">
                           {subtitleDraft.trim()}
                         </pre>
                       </ArtifactCard>
                     ) : null}
                     {editingPlan.trim() ? (
                       <ArtifactCard title="剪辑方案">
-                        <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
+                        <pre className="text-ws-secondary mt-1 whitespace-pre-wrap break-words font-sans text-[12px]">
                           {editingPlan.trim()}
                         </pre>
                       </ArtifactCard>
                     ) : null}
                     {englishTitle.trim() ? (
                       <ArtifactCard title="英文标题">
-                        <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
+                        <p className="text-ws-secondary mt-1 whitespace-pre-wrap break-words text-[12px]">
                           {englishTitle.trim()}
                         </p>
                       </ArtifactCard>
                     ) : null}
                     {tags.length ? (
                       <ArtifactCard title="标签">
-                        <p className="mt-1 whitespace-pre-wrap break-words text-[12px] text-slate-300">
+                        <p className="text-ws-secondary mt-1 whitespace-pre-wrap break-words text-[12px]">
                           {tags.join(', ')}
                         </p>
                       </ArtifactCard>
                     ) : null}
                     {videoSummary.trim() ? (
                       <ArtifactCard title="视频摘要">
-                        <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[12px] text-slate-300">
+                        <pre className="text-ws-secondary mt-1 whitespace-pre-wrap break-words font-sans text-[12px]">
                           {videoSummary.trim()}
                         </pre>
                       </ArtifactCard>
@@ -192,7 +190,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                           {frameAnalyses.slice(0, 6).map((item, index) => (
                             <p
                               key={`${index}-${item.slice(0, 12)}`}
-                              className="whitespace-pre-wrap break-words text-[12px] text-slate-300"
+                              className="text-ws-secondary whitespace-pre-wrap break-words text-[12px]"
                             >
                               {item}
                             </p>
@@ -208,15 +206,15 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                             ? 'text-emerald-300/80'
                             : state.edited_video.error_message
                               ? 'text-rose-300/80'
-                              : 'text-slate-400'
+                              : 'text-ws-muted'
                         }
                       >
                         <div className="mt-1 space-y-2">
-                          <p className="break-words text-[12px] text-slate-200">
+                          <p className="text-ws-secondary break-words text-[12px]">
                             {state.edited_video.file_name || '暂未生成导出文件'}
                           </p>
                           {state.edited_video.summary ? (
-                            <p className="whitespace-pre-wrap break-words text-[12px] text-slate-400">
+                            <p className="text-ws-muted whitespace-pre-wrap break-words text-[12px]">
                               {state.edited_video.summary}
                             </p>
                           ) : null}
@@ -226,16 +224,16 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                             </div>
                           ) : null}
                           {state.edited_video.size_bytes > 0 ? (
-                            <p className="text-[11px] text-slate-500">
+                            <p className="text-ws-soft text-[11px]">
                               {(state.edited_video.size_bytes / (1024 * 1024)).toFixed(2)} MB
                             </p>
                           ) : null}
                           {state.edited_video.command ? (
-                            <div className="rounded-[12px] border border-slate-800 bg-[#0b0b0b] px-3 py-2">
-                              <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                            <div className="theme-transition ws-card-contrast rounded-[12px] border px-3 py-2">
+                              <div className="text-ws-soft text-[10px] uppercase tracking-[0.18em]">
                                 FFmpeg Command
                               </div>
-                              <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[11px] leading-5 text-slate-400">
+                              <pre className="text-ws-muted mt-1 whitespace-pre-wrap break-words font-sans text-[11px] leading-5">
                                 {state.edited_video.command}
                               </pre>
                             </div>
@@ -255,7 +253,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                               </a>
                             </Button>
                           ) : (
-                            <div className="rounded-[12px] border border-dashed border-slate-800 bg-[#0b0b0b] px-3 py-2 text-[11px] text-slate-500">
+                            <div className="theme-transition ws-card-contrast text-ws-soft rounded-[12px] border border-dashed px-3 py-2 text-[11px]">
                               当前还没有可下载成片。请先修复导出参数或重新执行导出。
                             </div>
                           )}
@@ -263,7 +261,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                       </ArtifactCard>
                     ) : null}
                     {!hasArtifacts ? (
-                      <div className="rounded-[14px] border border-dashed border-slate-800 bg-[#111111] px-3 py-2 text-[12px] text-slate-500">
+                      <div className="theme-transition ws-card-muted text-ws-soft rounded-[14px] border border-dashed px-3 py-2 text-[12px]">
                         当前还没有已提交的剪辑状态产物。
                       </div>
                     ) : null}
@@ -271,7 +269,7 @@ const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                 </WorkflowStepCard>
               </div>
             ) : (
-              <div className="rounded-[18px] border border-dashed border-slate-800 bg-[#151515] px-4 py-5 text-[13px] leading-5 text-slate-400">
+              <div className="theme-transition ws-empty text-ws-muted rounded-[18px] border border-dashed px-4 py-5 text-[13px] leading-5">
                 当前轮次结束后，新的全局视频剪辑状态会显示在这里。
               </div>
             )}

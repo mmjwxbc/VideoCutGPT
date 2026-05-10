@@ -17,12 +17,13 @@ import {
   Type,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
+import ThemeToggle from '../components/ThemeToggle';
 
 /* ── Navigation ── */
 const NAV_LINKS = [
   { label: '工作台', href: '/caption', active: true },
-  { label: '字幕任务', href: '/caption' },
+  { label: '剪辑任务', href: '/caption' },
   { label: '模板中心', href: '#' },
   { label: '术语库', href: '#' },
   { label: '团队管理', href: '#' },
@@ -30,7 +31,7 @@ const NAV_LINKS = [
 ];
 
 const Navbar: React.FC = () => (
-  <nav className="sticky top-0 z-50 border-b border-slate-200/60 bg-white/72 backdrop-blur-xl">
+  <nav className="theme-transition sticky top-0 z-50 border-b border-app bg-app-surface backdrop-blur-xl">
     <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-8">
       <div className="flex items-center gap-10">
         <Link to="/" className="flex items-center gap-2.5">
@@ -38,10 +39,10 @@ const Navbar: React.FC = () => (
             <Globe className="h-4.5 w-4.5 text-white" />
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-[15px] font-bold tracking-tight text-slate-900">
+            <span className="text-app-primary text-[15px] font-bold tracking-tight">
               电商出海助手
             </span>
-            <span className="hidden text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400 sm:inline">
+            <span className="text-app-soft hidden text-[10px] font-semibold uppercase tracking-[0.2em] sm:inline">
               OVERSEA AGENT
             </span>
           </div>
@@ -54,7 +55,7 @@ const Navbar: React.FC = () => (
               className={`rounded-lg px-3 py-1.5 text-[13px] font-medium transition ${
                 link.active
                   ? 'bg-blue-50 text-blue-700'
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  : 'text-app-muted hover:bg-app-surface-subtle hover:text-app-primary'
               }`}
             >
               {link.label}
@@ -63,22 +64,23 @@ const Navbar: React.FC = () => (
         </div>
       </div>
       <div className="flex items-center gap-4">
+        <ThemeToggle className="hidden sm:inline-flex" />
         <button
           type="button"
-          className="relative flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+          className="theme-transition text-app-muted hover:text-app-primary relative flex h-9 w-9 items-center justify-center rounded-xl border border-app bg-app-surface-solid"
         >
           <Bell className="h-4 w-4" />
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500" />
         </button>
-        <div className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 transition hover:border-slate-300">
+        <div className="theme-transition flex items-center gap-2.5 rounded-xl border border-app bg-app-surface-solid px-3 py-1.5 hover:border-app-strong">
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-[11px] font-bold text-white">
             A
           </div>
           <div className="hidden sm:block">
-            <p className="text-[12px] font-semibold text-slate-800">Admin</p>
-            <p className="text-[10px] text-slate-400">默认团队</p>
+            <p className="text-app-primary text-[12px] font-semibold">Admin</p>
+            <p className="text-app-soft text-[10px]">默认团队</p>
           </div>
-          <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+          <ChevronDown className="text-app-soft h-3.5 w-3.5" />
         </div>
       </div>
     </div>
@@ -100,16 +102,16 @@ const Hero: React.FC<{ onEnterCaption: () => void }> = ({ onEnterCaption }) => (
         <p className="text-[11px] font-bold uppercase tracking-[0.32em] text-blue-600">
           OVERSEA AGENT
         </p>
-        <h1 className="mt-4 text-[42px] font-bold leading-[1.12] tracking-tight text-slate-900 lg:text-[52px]">
+        <h1 className="text-app-primary mt-4 text-[42px] font-bold leading-[1.12] tracking-tight lg:text-[52px]">
           为电商出海团队构建真正好用的
           <span className="bg-gradient-to-r from-blue-600 to-blue-500 bg-clip-text text-transparent">
             AI 创作工作台
           </span>
         </h1>
-        <p className="mt-5 text-[15px] leading-[1.8] text-slate-500">
-          从视频上传到字幕生成、编辑、导出，一站式完成字幕创作。
+        <p className="text-app-muted mt-5 text-[15px] leading-[1.8]">
+          从视频上传到智能剪辑、特效包装、一键导出，一站式完成视频创作。
           <br />
-          AI 理解语境，自动生成更自然准确的字幕。
+          AI 理解语境，自动生成更专业的视频作品。
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <motion.button
@@ -120,14 +122,14 @@ const Hero: React.FC<{ onEnterCaption: () => void }> = ({ onEnterCaption }) => (
             className="group relative inline-flex h-12 items-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 px-7 text-[14px] font-semibold text-white shadow-lg shadow-blue-500/25 transition-shadow hover:shadow-xl hover:shadow-blue-500/30"
           >
             <span className="relative z-10 flex items-center gap-2">
-              进入字幕工作台
+              进入视频剪辑工作台
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
             </span>
             <span className="absolute inset-0 bg-gradient-to-r from-blue-500 to-blue-400 opacity-0 transition-opacity group-hover:opacity-100" />
           </motion.button>
           <Link
             to="#"
-            className="inline-flex h-12 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-6 text-[14px] font-medium text-slate-700 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+            className="theme-transition text-app-secondary inline-flex h-12 items-center gap-2 rounded-2xl border border-app bg-app-surface-solid px-6 text-[14px] font-medium shadow-sm hover:border-app-strong hover:shadow-md"
           >
             <BookOpen className="h-4 w-4" />
             使用指南
@@ -145,17 +147,17 @@ const Hero: React.FC<{ onEnterCaption: () => void }> = ({ onEnterCaption }) => (
 const WorkspacePreview: React.FC = () => (
   <div className="relative">
     <div className="absolute -inset-4 rounded-[32px] bg-gradient-to-br from-blue-500/10 to-sky-400/5 blur-2xl" />
-    <div className="relative overflow-hidden rounded-[24px] border border-slate-200/80 bg-white shadow-2xl shadow-slate-300/30">
+    <div className="theme-transition relative overflow-hidden rounded-[24px] border border-ws bg-app-surface-solid shadow-2xl shadow-slate-300/20">
       <div className="grid h-[440px] grid-cols-[200px_1fr_180px]">
         {/* Sidebar */}
-        <div className="border-r border-slate-100 bg-slate-50/80 p-3.5">
+        <div className="theme-transition border-r border-ws ws-card-muted p-3.5">
           <div className="mb-3 flex items-center gap-2">
             <Clapperboard className="h-3.5 w-3.5 text-blue-500" />
-            <span className="text-[11px] font-semibold text-slate-700">字幕工作台</span>
+            <span className="text-ws-secondary text-[11px] font-semibold">视频剪辑工作台</span>
           </div>
           <div className="space-y-1">
             {[
-              { icon: <Sparkles className="h-3 w-3" />, label: '新建字幕任务', active: true },
+              { icon: <Sparkles className="h-3 w-3" />, label: '新建剪辑任务', active: true },
               { icon: <FileText className="h-3 w-3" />, label: '任务列表' },
               { icon: <Layers className="h-3 w-3" />, label: '最近文件' },
               { icon: <Palette className="h-3 w-3" />, label: '我的模板' },
@@ -166,7 +168,7 @@ const WorkspacePreview: React.FC = () => (
                 className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-[11px] font-medium ${
                   item.active
                     ? 'bg-blue-50 text-blue-700'
-                    : 'text-slate-500 hover:bg-white hover:text-slate-700'
+                    : 'text-ws-muted hover:bg-app-surface-solid hover:text-ws-secondary'
                 }`}
               >
                 {item.icon}
@@ -177,9 +179,9 @@ const WorkspacePreview: React.FC = () => (
         </div>
 
         {/* Center: chat area */}
-        <div className="flex flex-col bg-white">
-          <div className="border-b border-slate-100 px-4 py-2.5">
-            <p className="text-[11px] font-semibold text-slate-700">对话式字幕生成助手</p>
+        <div className="theme-transition flex flex-col bg-app-surface-solid">
+          <div className="border-b border-ws px-4 py-2.5">
+            <p className="text-ws-secondary text-[11px] font-semibold">对话式视频创作助手</p>
           </div>
           <div className="flex-1 space-y-3 overflow-hidden px-4 py-3">
             {/* AI welcome */}
@@ -187,9 +189,9 @@ const WorkspacePreview: React.FC = () => (
               <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-600">
                 <Sparkles className="h-3 w-3 text-white" />
               </div>
-              <div className="rounded-xl rounded-tl-sm bg-slate-50 px-3 py-2">
-                <p className="text-[11px] leading-5 text-slate-600">
-                  你好！上传视频后，我会帮你生成精准的字幕草稿。支持多语言翻译和风格调整。
+              <div className="theme-transition ws-card-muted rounded-xl rounded-tl-sm px-3 py-2">
+                <p className="text-ws-muted text-[11px] leading-5">
+                  你好！上传视频后，我会帮你完成智能剪辑和创意包装。支持特效、转场和风格调整。
                 </p>
               </div>
             </div>
@@ -208,7 +210,7 @@ const WorkspacePreview: React.FC = () => (
             <div className="flex justify-end">
               <div className="max-w-[80%] rounded-xl rounded-tr-sm bg-blue-600 px-3 py-2">
                 <p className="text-[11px] leading-5 text-white">
-                  帮我生成适合 TikTok 的英文字幕，保持口语化风格
+                  帮我制作适合 TikTok 的短视频，保持口语化风格
                 </p>
               </div>
             </div>
@@ -217,26 +219,26 @@ const WorkspacePreview: React.FC = () => (
               <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-600">
                 <Sparkles className="h-3 w-3 text-white" />
               </div>
-              <div className="rounded-xl rounded-tl-sm bg-slate-50 px-3 py-2">
-                <p className="text-[11px] leading-5 text-slate-600">
-                  已为你生成口语化英文字幕，共 12 条，已适配 TikTok 竖版画面。
+              <div className="theme-transition ws-card-muted rounded-xl rounded-tl-sm px-3 py-2">
+                <p className="text-ws-muted text-[11px] leading-5">
+                  已为你生成短视频剪辑方案，共 12 个镜头，已适配 TikTok 竖版画面。
                 </p>
               </div>
             </div>
           </div>
           {/* Input */}
-          <div className="border-t border-slate-100 px-4 py-2.5">
-            <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
-              <MessageSquare className="h-3.5 w-3.5 text-slate-400" />
-              <span className="text-[11px] text-slate-400">有问题，尽管问...</span>
+          <div className="border-t border-ws px-4 py-2.5">
+            <div className="theme-transition ws-card-muted flex items-center gap-2 rounded-xl px-3 py-2">
+              <MessageSquare className="text-ws-soft h-3.5 w-3.5" />
+              <span className="text-ws-soft text-[11px]">有问题，尽管问...</span>
             </div>
           </div>
         </div>
 
         {/* Right: caption drafts */}
-        <div className="border-l border-slate-100 bg-slate-50/80 p-3">
-          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-            字幕草稿
+        <div className="theme-transition border-l border-ws ws-card-muted p-3">
+          <p className="text-ws-soft mb-2 text-[10px] font-semibold uppercase tracking-[0.16em]">
+            剪辑草稿
           </p>
           <div className="space-y-2">
             {[
@@ -245,10 +247,10 @@ const WorkspacePreview: React.FC = () => (
               { time: '00:08', zh: '效果立竿见影', en: 'Instant results' },
               { time: '00:12', zh: '超值推荐给大家', en: 'Highly recommend' },
             ].map((item) => (
-              <div key={item.time} className="rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+              <div key={item.time} className="theme-transition rounded-lg border border-ws bg-app-surface-solid px-2 py-1.5">
                 <p className="text-[9px] font-mono text-blue-500">{item.time}</p>
-                <p className="mt-0.5 truncate text-[10px] text-slate-700">{item.zh}</p>
-                <p className="truncate text-[10px] text-slate-400">{item.en}</p>
+                <p className="text-ws-secondary mt-0.5 truncate text-[10px]">{item.zh}</p>
+                <p className="text-ws-soft truncate text-[10px]">{item.en}</p>
               </div>
             ))}
           </div>
@@ -257,7 +259,7 @@ const WorkspacePreview: React.FC = () => (
             className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg bg-blue-500 py-1.5 text-[10px] font-medium text-white"
           >
             <Wand2 className="h-3 w-3" />
-            导出字幕
+            导出视频
           </button>
         </div>
       </div>
@@ -270,7 +272,7 @@ const CAPABILITY_CARDS = [
   {
     icon: <Wand2 className="h-5 w-5" />,
     title: '润色表达',
-    description: '优化字幕措辞，让翻译更地道、更贴合目标语言文化习惯。',
+    description: '优化视频节奏和表达，让画面更流畅、更贴合目标受众。',
     color: 'from-blue-500 to-blue-400',
     bgLight: 'bg-blue-50',
     textColor: 'text-blue-600',
@@ -294,7 +296,7 @@ const CAPABILITY_CARDS = [
   {
     icon: <Palette className="h-5 w-5" />,
     title: '调整风格',
-    description: '根据目标平台和受众，切换口语化、专业或轻松等字幕风格。',
+    description: '根据目标平台和受众，切换口语化、专业或轻松等视频风格。',
     color: 'from-amber-500 to-amber-400',
     bgLight: 'bg-amber-50',
     textColor: 'text-amber-600',
@@ -306,13 +308,13 @@ const FeatureSection: React.FC = () => (
     <div className="mx-auto max-w-[1440px] px-8">
       <div className="text-center">
         <p className="text-[11px] font-bold uppercase tracking-[0.32em] text-blue-600">
-          AI-Powered Caption
+          AI-Powered Video Editing
         </p>
-        <h2 className="mt-3 text-[28px] font-bold tracking-tight text-slate-900 lg:text-[34px]">
-          字幕生成对话助手
+        <h2 className="text-app-primary mt-3 text-[28px] font-bold tracking-tight lg:text-[34px]">
+          视频创作对话助手
         </h2>
-        <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-[1.8] text-slate-500">
-          像聊天一样与 AI 协作创作字幕。上传视频、描述需求，AI 自动生成、迭代、优化，直到你满意为止。
+        <p className="text-app-muted mx-auto mt-3 max-w-2xl text-[15px] leading-[1.8]">
+          像聊天一样与 AI 协作创作视频。上传素材、描述需求，AI 自动剪辑、迭代、优化，直到你满意为止。
         </p>
       </div>
 
@@ -324,15 +326,15 @@ const FeatureSection: React.FC = () => (
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: '-40px' }}
             transition={{ duration: 0.4, delay: i * 0.08 }}
-            className="group rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
+            className="theme-transition group rounded-2xl border border-app bg-app-surface-solid p-6 shadow-sm hover:shadow-md"
           >
             <div
               className={`flex h-11 w-11 items-center justify-center rounded-xl ${card.bgLight} ${card.textColor}`}
             >
               {card.icon}
             </div>
-            <h3 className="mt-4 text-[15px] font-semibold text-slate-900">{card.title}</h3>
-            <p className="mt-2 text-[13px] leading-[1.7] text-slate-500">{card.description}</p>
+            <h3 className="text-app-primary mt-4 text-[15px] font-semibold">{card.title}</h3>
+            <p className="text-app-muted mt-2 text-[13px] leading-[1.7]">{card.description}</p>
           </motion.div>
         ))}
       </div>
@@ -342,17 +344,17 @@ const FeatureSection: React.FC = () => (
 
 /* ── Footer ── */
 const Footer: React.FC = () => (
-  <footer className="border-t border-slate-100 bg-white/60">
+  <footer className="theme-transition border-t border-app bg-app-surface">
     <div className="mx-auto flex max-w-[1440px] items-center justify-between px-8 py-6">
-      <p className="text-[12px] text-slate-400">&copy; 2026 电商出海助手 &middot; OVERSEA AGENT</p>
+      <p className="text-app-soft text-[12px]">&copy; 2026 电商出海助手 &middot; OVERSEA AGENT</p>
       <div className="flex items-center gap-6">
-        <a href="#" className="text-[12px] text-slate-400 hover:text-slate-600">
+        <a href="#" className="text-app-soft hover:text-app-secondary text-[12px]">
           隐私政策
         </a>
-        <a href="#" className="text-[12px] text-slate-400 hover:text-slate-600">
+        <a href="#" className="text-app-soft hover:text-app-secondary text-[12px]">
           服务条款
         </a>
-        <a href="#" className="text-[12px] text-slate-400 hover:text-slate-600">
+        <a href="#" className="text-app-soft hover:text-app-secondary text-[12px]">
           帮助中心
         </a>
       </div>
@@ -374,7 +376,7 @@ const Home: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-50">
+    <div className="bg-app-hero min-h-screen">
       <Navbar />
       <Hero onEnterCaption={handleEnterCaption} />
       <FeatureSection />
@@ -383,163 +385,284 @@ const Home: React.FC = () => {
   );
 };
 
-/* ── Wormhole Transition ── */
+/* ── Blackhole Cinematic Transition ── */
 interface WormholeTransitionProps {
   onComplete: () => void;
 }
 
-const PARTICLE_COUNT = 40;
-const ENERGY_LINE_COUNT = 16;
+const STAR_COUNT = 36;
+const RING_COUNT = 4;
+const GPU_HINTS: React.CSSProperties = { willChange: 'transform, opacity', transform: 'translateZ(0)' };
 
 const WormholeTransition: React.FC<WormholeTransitionProps> = ({ onComplete }) => {
-  const particles = React.useMemo(
+  const prefersReducedMotion = useReducedMotion();
+  const stars = React.useMemo(
     () =>
-      Array.from({ length: PARTICLE_COUNT }, (_, i) => ({
+      Array.from({ length: STAR_COUNT }, (_, i) => {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 80 + Math.random() * 600;
+        return {
+          id: i,
+          angle,
+          dist,
+          size: 1.0 + Math.random() * 3.0,
+          brightness: 0.4 + Math.random() * 0.6,
+          delay: Math.random() * 0.5,
+          fallDuration: 0.6 + (dist / 600) * 1.2 + Math.random() * 0.4,
+          hue: [200, 210, 220, 240, 260][Math.floor(Math.random() * 5)],
+          streakBase: 4 + Math.random() * 8,
+        };
+      }),
+    [],
+  );
+
+  const rings = React.useMemo(
+    () =>
+      Array.from({ length: RING_COUNT }, (_, i) => ({
         id: i,
-        dx: `${(Math.random() - 0.5) * 600}px`,
-        dy: `${(Math.random() - 0.5) * 600}px`,
-        size: 2 + Math.random() * 4,
-        delay: Math.random() * 0.4,
-        duration: 0.6 + Math.random() * 0.6,
+        baseRadius: 80 + i * 60,
+        opacity: 0.08 + (RING_COUNT - i) * 0.04,
+        border: i < 2 ? 2 : 1,
+        hue: i % 2 === 0 ? 220 : 260,
+        spinDuration: 1.6 + i * 0.5,
+        reverse: i % 2 === 0,
       })),
     [],
   );
 
-  const energyLines = React.useMemo(
-    () =>
-      Array.from({ length: ENERGY_LINE_COUNT }, (_, i) => ({
-        id: i,
-        left: `${5 + Math.random() * 90}%`,
-        travel: `${200 + Math.random() * 400}px`,
-        delay: Math.random() * 0.5,
-        height: 40 + Math.random() * 80,
-      })),
-    [],
-  );
-
-  return (
-    <div className="fixed inset-0 z-[9999] overflow-hidden bg-[#020617]">
-      {/* Phase 1: Ripple from center */}
+  if (prefersReducedMotion) {
+    return (
       <motion.div
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        initial={{ scale: 0, opacity: 0.8 }}
-        animate={{ scale: 6, opacity: 0 }}
-        transition={{ duration: 0.7, ease: 'easeOut' }}
-      >
-        <div className="h-48 w-48 rounded-full border-2 border-blue-400/60" />
-      </motion.div>
-
-      {/* Phase 2: Page distortion overlay */}
-      <motion.div
-        className="absolute inset-0"
-        initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-        animate={{ opacity: 1, backdropFilter: 'blur(12px)' }}
-        transition={{ duration: 0.4, delay: 0.15 }}
-      >
-        <div className="h-full w-full bg-gradient-radial from-blue-950/80 via-[#020617]/90 to-[#020617]" />
-      </motion.div>
-
-      {/* Phase 3: Vortex / blackhole */}
-      <motion.div
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        initial={{ scale: 0.3, opacity: 0 }}
-        animate={{ scale: 1.8, opacity: 1 }}
-        transition={{ duration: 0.8, delay: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      >
-        {/* Outer ring */}
-        <div className="wh-spin-vortex absolute -inset-32 rounded-full border border-blue-500/20" />
-        <div
-          className="wh-spin-vortex absolute -inset-24 rounded-full border border-blue-400/15"
-          style={{ animationDirection: 'reverse', animationDuration: '1.6s' }}
-        />
-        <div
-          className="wh-spin-vortex absolute -inset-16 rounded-full border border-violet-500/10"
-          style={{ animationDuration: '2.4s' }}
-        />
-        {/* Core glow */}
-        <div className="wh-glow absolute -inset-8 rounded-full bg-gradient-to-br from-blue-600/30 via-violet-600/20 to-transparent blur-2xl" />
-        {/* Dark center */}
-        <div className="relative h-32 w-32 rounded-full bg-gradient-to-br from-[#020617] via-[#0a1128] to-[#020617] shadow-[0_0_80px_20px_rgba(37,99,235,0.15)]" />
-      </motion.div>
-
-      {/* Phase 3b: Particles flying into center */}
-      <div className="absolute inset-0">
-        {particles.map((p) => (
-          <motion.div
-            key={p.id}
-            className="absolute left-1/2 top-1/2 rounded-full bg-blue-400"
-            style={{
-              width: p.size,
-              height: p.size,
-              '--wh-dx': p.dx,
-              '--wh-dy': p.dy,
-            } as React.CSSProperties}
-            initial={{ x: 0, y: 0, opacity: 0.8, scale: 1 }}
-            animate={{
-              x: [0, parseFloat(p.dx) * 0.3, 0],
-              y: [0, parseFloat(p.dy) * 0.3, 0],
-              opacity: [0, 0.9, 0],
-              scale: [1, 0.6, 0],
-            }}
-            transition={{
-              duration: p.duration,
-              delay: 0.3 + p.delay,
-              ease: 'easeIn',
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Phase 3c: Energy lines */}
-      <div className="absolute inset-0">
-        {energyLines.map((line) => (
-          <motion.div
-            key={line.id}
-            className="absolute left-1/2 w-px bg-gradient-to-b from-transparent via-blue-400/60 to-transparent"
-            style={{
-              left: line.left,
-              height: line.height,
-              '--wh-travel': line.travel,
-            } as React.CSSProperties}
-            initial={{ y: -200, opacity: 0, scaleY: 0.5 }}
-            animate={{ y: 200, opacity: [0, 0.8, 0], scaleY: [0.5, 1.2, 0.8] }}
-            transition={{
-              duration: 0.9,
-              delay: 0.35 + line.delay,
-              ease: 'easeInOut',
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Phase 4: Light at the end of the tunnel */}
-      <motion.div
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: [0, 0.5, 3], opacity: [0, 0.3, 1] }}
-        transition={{ duration: 0.8, delay: 0.85, ease: [0.22, 1, 0.36, 1] }}
-      >
-        <div className="h-64 w-64 rounded-full bg-gradient-to-br from-white/90 via-blue-200/70 to-blue-400/30 blur-3xl" />
-      </motion.div>
-
-      {/* Phase 5: New page reveal — wipe from center */}
-      <motion.div
-        className="absolute inset-0 bg-[#090909]"
-        initial={{ clipPath: 'circle(0% at 50% 50%)' }}
-        animate={{ clipPath: 'circle(75% at 50% 50%)' }}
-        transition={{ duration: 0.6, delay: 1.2, ease: [0.22, 1, 0.36, 1] }}
+        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.22 }}
         onAnimationComplete={onComplete}
       >
-        {/* Caption page silhouette elements */}
+        <Sparkles className="h-8 w-8 text-blue-300/70" />
+      </motion.div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9999] overflow-hidden bg-[#000000]">
+      {/* ── ENTRY PHASE ── */}
+
+      {/* A: Stars appear then streak toward center — single merged layer */}
+      <div className="absolute inset-0">
+        {stars.map((s) => {
+          const cosA = Math.cos(s.angle);
+          const sinA = Math.sin(s.angle);
+          const streakScaleX = s.streakBase * 8;
+          return (
+            <motion.div
+              key={`s-${s.id}`}
+              layout={false}
+              className="absolute left-1/2 top-1/2"
+              style={{
+                rotate: `${(s.angle * 180) / Math.PI}deg`,
+                transformOrigin: '0 50%',
+                ...GPU_HINTS,
+              }}
+              initial={{
+                x: cosA * s.dist,
+                y: sinA * s.dist,
+                scaleX: 1,
+                scaleY: 1,
+                opacity: 0,
+              }}
+              animate={{
+                x: [cosA * s.dist, cosA * s.dist, cosA * s.dist * 0.03],
+                y: [sinA * s.dist, sinA * s.dist, sinA * s.dist * 0.03],
+                scaleX: [1, s.streakBase * 2, streakScaleX],
+                scaleY: [1, 1, 0.6, 0.3],
+                opacity: [0, s.brightness, s.brightness, 0],
+              }}
+              transition={{
+                duration: 1.2 + s.fallDuration * 0.45,
+                delay: s.delay * 0.3,
+                ease: [0.15, 0, 0.85, 1],
+                x: { times: [0, 0.3, 1] },
+                y: { times: [0, 0.3, 1] },
+                scaleX: { times: [0, 0.55, 1] },
+                scaleY: { times: [0, 0.55, 0.8, 1] },
+                opacity: { times: [0, 0.12, 0.45, 1] },
+              }}
+            >
+              <div
+                style={{
+                  width: s.size,
+                  height: s.size,
+                  borderRadius: '50%',
+                  backgroundColor: `hsl(${s.hue}, 80%, 85%)`,
+                }}
+              />
+            </motion.div>
+          );
+        })}
+      </div>
+
+      {/* B: Concentric rings — scale-based animation (GPU-composited) */}
+      <div className="absolute inset-0 pointer-events-none">
+        {rings.map((r) => (
+          <motion.div
+            key={`ring-${r.id}`}
+            layout={false}
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+            style={{
+              width: r.baseRadius * 2,
+              height: r.baseRadius * 2,
+              ...GPU_HINTS,
+            }}
+            initial={{ scale: 1, opacity: 0 }}
+            animate={{
+              scale: [1, 1, 0.25, 0.04],
+              opacity: [0, r.opacity, r.opacity * 2.5, 0],
+            }}
+            transition={{
+              duration: 2.2,
+              delay: 0.2 + r.id * 0.05,
+              ease: [0.2, 0, 0.8, 1],
+              scale: { times: [0, 0.3, 0.75, 1] },
+              opacity: { times: [0, 0.2, 0.6, 1] },
+            }}
+          >
+            <div
+              className="wh-spin-vortex w-full h-full rounded-full"
+              style={{
+                border: `${r.border}px solid hsl(${r.hue}, 70%, 60% / ${r.opacity})`,
+                animationDuration: `${r.spinDuration}s`,
+                animationDirection: r.reverse ? 'reverse' : 'normal',
+              }}
+            />
+          </motion.div>
+        ))}
+      </div>
+
+      {/* C: Black hole center — grows from pinhole to dominate the frame */}
+      <motion.div
+        layout={false}
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={GPU_HINTS}
+        initial={{ scale: 0, opacity: 0 }}
+        animate={{ scale: [0, 0.15, 0.6, 12], opacity: [0, 0.4, 0.9, 1] }}
+        transition={{ duration: 2.5, delay: 0.1, ease: [0.3, 0, 0.7, 1], times: [0, 0.15, 0.5, 1] }}
+      >
+        <div className="absolute -inset-8 rounded-full bg-gradient-to-br from-blue-600/25 via-violet-500/15 to-transparent blur-2xl wh-glow" />
+        <div
+          className="wh-spin-vortex absolute -inset-4 rounded-full border-2 border-blue-300/25"
+          style={{ animationDuration: '3s', boxShadow: '0 0 30px 8px rgba(147,197,253,0.12)' }}
+        />
+        <div className="relative h-20 w-20 rounded-full bg-black shadow-[0_0_80px_20px_rgba(0,0,0,0.9),0_0_160px_40px_rgba(30,58,138,0.08)]" />
+      </motion.div>
+
+      {/* ── THE OPENING UP CLIMAX ── */}
+
+      {/* D: Explosive point-origin white burst */}
+      <motion.div
+        layout={false}
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={GPU_HINTS}
+        initial={{ scale: 0, opacity: 0 }}
+        animate={{ scale: [0, 0.01, 0.8, 50], opacity: [0, 0, 0.7, 1] }}
+        transition={{ duration: 0.7, delay: 2.3, ease: [0.1, 0, 0.2, 1] }}
+      >
+        <div className="h-4 w-4 rounded-full bg-white" style={{ boxShadow: '0 0 60px 30px rgba(255,255,255,0.8), 0 0 120px 60px rgba(147,197,253,0.4)' }} />
+      </motion.div>
+
+      {/* E: Anamorphic lens flare */}
+      <motion.div
+        layout={false}
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        style={GPU_HINTS}
+        initial={{ scaleX: 0, opacity: 0 }}
+        animate={{ scaleX: [0, 0.5, 1.5, 20], opacity: [0, 0.9, 1, 0.6] }}
+        transition={{ duration: 0.6, delay: 2.35, ease: [0.1, 0, 0.2, 1] }}
+      >
+        <div
+          className="h-[3px] w-[300px] -translate-x-1/2 rounded-full"
+          style={{
+            background: 'linear-gradient(90deg, transparent 0%, rgba(147,197,253,0.3) 15%, rgba(255,255,255,0.95) 40%, white 50%, rgba(255,255,255,0.95) 60%, rgba(147,197,253,0.3) 85%, transparent 100%)',
+            boxShadow: '0 0 20px 6px rgba(147,197,253,0.3), 0 0 60px 20px rgba(147,197,253,0.15)',
+          }}
+        />
+      </motion.div>
+
+      {/* F: Diagonal lens flare streaks */}
+      {[0, 60, 120].map((deg) => (
         <motion.div
-          className="flex h-full w-full items-center justify-center"
-          initial={{ opacity: 0, scale: 0.9 }}
+          key={`flare-${deg}`}
+          layout={false}
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+          style={GPU_HINTS}
+          initial={{ scale: 0, opacity: 0, rotate: deg }}
+          animate={{ scale: [0, 0.3, 8], opacity: [0, 0.7, 0], rotate: deg }}
+          transition={{ duration: 0.8, delay: 2.35, ease: 'easeOut' }}
+        >
+          <div className="h-[1px] w-[1600px] -translate-x-1/2 bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+        </motion.div>
+      ))}
+
+      {/* G: Blinding full-frame white */}
+      <motion.div
+        layout={false}
+        className="absolute inset-0 bg-white"
+        style={GPU_HINTS}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: [0, 0, 1, 1, 1, 0.6] }}
+        transition={{ duration: 1.8, delay: 2.5, times: [0, 0.05, 0.12, 0.5, 0.75, 1] }}
+      />
+
+      {/* ── INTERFACE EMERGENCE ── */}
+
+      {/* H: White dissolves into the studio — radial wipe from center */}
+      <motion.div
+        layout={false}
+        className="theme-transition absolute inset-0 ws-shell"
+        style={GPU_HINTS}
+        initial={{ clipPath: 'circle(0% at 50% 50%)' }}
+        animate={{ clipPath: 'circle(75% at 50% 50%)' }}
+        transition={{ duration: 0.8, delay: 3.8, ease: [0.22, 1, 0.36, 1] }}
+        onAnimationComplete={onComplete}
+      >
+        {/* Soft residual light glow — fading */}
+        <motion.div
+          layout={false}
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+          style={GPU_HINTS}
+          initial={{ scale: 3, opacity: 0.4 }}
+          animate={{ scale: 2, opacity: 0 }}
+          transition={{ duration: 1.2, delay: 4.0, ease: 'easeOut' }}
+        >
+          <div className="h-96 w-96 rounded-full bg-gradient-to-br from-blue-400/15 via-white/8 to-transparent blur-3xl" />
+        </motion.div>
+
+        {/* Studio loading content */}
+        <motion.div
+          layout={false}
+          className="relative z-10 flex h-full w-full items-center justify-center"
+          initial={{ opacity: 0, scale: 0.94 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5, delay: 1.3 }}
+          transition={{ duration: 0.8, delay: 4.2, ease: 'easeOut' }}
         >
           <div className="text-center">
-            <Sparkles className="mx-auto h-8 w-8 text-blue-400/60" />
-            <p className="mt-3 text-sm text-slate-400">正在进入字幕工作台...</p>
+            <motion.div
+              layout={false}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 4.3 }}
+            >
+              <Sparkles className="mx-auto h-8 w-8 text-blue-400/60" />
+            </motion.div>
+            <motion.p
+              layout={false}
+              className="text-ws-soft mt-3 text-sm"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 4.5 }}
+            >
+              正在进入视频剪辑工作台...
+            </motion.p>
           </div>
         </motion.div>
       </motion.div>

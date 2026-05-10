@@ -95,7 +95,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
   activeSessionTitle,
   workflowRows,
 }) => (
-  <section className="flex min-h-0 flex-col overflow-hidden bg-[#090909]">
+  <section className="theme-transition ws-shell flex min-h-0 flex-col overflow-hidden">
     {/* Mobile drawer tabs (replaces old tab toggle) */}
     <MobileDrawerTabs
       activeDrawer={activeDrawer}
@@ -115,30 +115,30 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     <div className="flex min-h-0 flex-1 flex-col">
       <div
         ref={threadRef}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-[#090909] px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="theme-transition ws-shell min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5 [overflow-anchor:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex min-h-full flex-col gap-3 pb-6">
           {isSessionLoading ? (
-            <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
+            <div className="theme-transition ws-card flex min-h-[160px] items-center justify-center rounded-[18px] border px-3.5 py-4 text-center">
               <div>
-                <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                <p className="text-ws-soft text-[10px] font-medium uppercase tracking-[0.24em]">
                   Loading Session
                 </p>
-                <p className="mt-2 text-[12px] leading-5 text-slate-300">
+                <p className="text-ws-secondary mt-2 text-[12px] leading-5">
                   正在加载会话内容，请稍候。
                 </p>
               </div>
             </div>
           ) : !session && !pendingUserPrompt ? (
-            <div className="flex min-h-[160px] items-center justify-center rounded-[18px] border border-slate-800 bg-[#141414] px-3.5 py-4 text-center">
+            <div className="theme-transition ws-card flex min-h-[160px] items-center justify-center rounded-[18px] border px-3.5 py-4 text-center">
               <div className="max-w-lg">
-                <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-slate-500">
+                <p className="text-ws-soft text-[10px] font-medium uppercase tracking-[0.24em]">
                   Waiting For Session
                 </p>
-                <h3 className="mt-2 text-[15px] font-semibold tracking-[-0.04em] text-slate-100">
+                <h3 className="text-ws-primary mt-2 text-[15px] font-semibold tracking-[-0.04em]">
                   先在下方创建你的第一轮任务
                 </h3>
-                <p className="mt-2 text-[12px] leading-5 text-slate-400">
+                <p className="text-ws-muted mt-2 text-[12px] leading-5">
                   提交后，这里只展示每一轮的工具调用参数、思考过程和最终文字输出。
                 </p>
               </div>
@@ -164,7 +164,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
         </div>
       </div>
 
-      <div className="shrink-0 bg-[#090909] px-6 pb-5 pt-4">
+      <div className="theme-transition ws-shell shrink-0 px-6 pb-5 pt-4">
         <ChatComposer
           className="mx-auto"
           value={draftPrompt}
@@ -209,7 +209,7 @@ const ConversationPanel: React.FC<ConversationPanelProps> = ({
     </div>
 
     {accessRecoveryRequired && error ? (
-      <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 px-6">
+      <div className="ws-overlay absolute inset-0 z-30 flex items-center justify-center px-6">
         <div
           className="w-full max-w-md rounded-[28px] border border-rose-900/70 bg-[#12090b] p-6 text-center shadow-2xl shadow-black/40"
           aria-live="assertive"

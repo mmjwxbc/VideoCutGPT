@@ -75,7 +75,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
   return (
     <>
       {/* Top pill buttons */}
-      <div className="flex items-center gap-2 border-b border-slate-800 bg-[#0f0f0f] px-4 py-3 lg:hidden">
+      <div className="theme-transition ws-panel flex items-center gap-2 border-b px-4 py-3 lg:hidden">
         <button
           type="button"
           onClick={() => onToggleDrawer('history')}
@@ -84,7 +84,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
           className={`inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border text-[12px] font-medium transition ${
             activeDrawer === 'history'
               ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
-              : 'border-slate-800 bg-[#171717] text-slate-400 hover:border-slate-700 hover:text-slate-200'
+              : 'theme-transition border-ws ws-card text-ws-muted hover:border-ws-strong hover:text-ws-secondary'
           }`}
         >
           <MessageSquare className="h-3.5 w-3.5" />
@@ -98,7 +98,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
           className={`inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border text-[12px] font-medium transition ${
             activeDrawer === 'status'
               ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
-              : 'border-slate-800 bg-[#171717] text-slate-400 hover:border-slate-700 hover:text-slate-200'
+              : 'theme-transition border-ws ws-card text-ws-muted hover:border-ws-strong hover:text-ws-secondary'
           }`}
         >
           <Clapperboard className="h-3.5 w-3.5" />
@@ -113,7 +113,7 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
             {/* Backdrop overlay */}
             <motion.div
               key="drawer-overlay"
-              className="fixed inset-0 z-[80] bg-black/45 backdrop-blur-[2px] lg:hidden"
+              className="ws-overlay fixed inset-0 z-[80] backdrop-blur-[2px] lg:hidden"
               variants={overlayVariants}
               initial="hidden"
               animate="visible"
@@ -130,24 +130,24 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
                 role="dialog"
                 aria-label="聊天记录"
                 aria-modal="true"
-                className="fixed inset-y-0 left-0 z-[90] flex w-[82vw] max-w-[360px] flex-col border-r border-slate-700/40 bg-[#0f0f10] shadow-[4px_0_32px_rgba(0,0,0,0.45)] lg:hidden"
+                className="theme-transition ws-panel fixed inset-y-0 left-0 z-[90] flex w-[82vw] max-w-[360px] flex-col border-r shadow-[4px_0_32px_rgba(0,0,0,0.45)] lg:hidden"
                 initial={{ x: '-100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={springTransition}
               >
                 {/* Drawer header */}
-                <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-3">
+                <div className="border-ws flex shrink-0 items-center justify-between border-b px-4 py-3">
                   <div className="flex items-center gap-2">
                     <MessageSquare className="h-4 w-4 text-sky-400" />
-                    <h2 className="text-[14px] font-semibold text-slate-100">聊天记录</h2>
+                    <h2 className="text-ws-primary text-[14px] font-semibold">聊天记录</h2>
                   </div>
                   <button
                     ref={closeButtonRef}
                     type="button"
                     onClick={onCloseDrawer}
                     aria-label="关闭聊天记录"
-                    className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-400 transition hover:border-slate-600 hover:text-white"
+                    className="theme-transition ws-card text-ws-muted hover:text-ws-primary flex h-8 w-8 items-center justify-center rounded-full border"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -172,24 +172,24 @@ const MobileDrawerTabs: React.FC<MobileDrawerTabsProps> = ({
                 role="dialog"
                 aria-label="剪辑状态"
                 aria-modal="true"
-                className="fixed inset-y-0 right-0 z-[90] flex w-[82vw] max-w-[360px] flex-col border-l border-slate-700/40 bg-[#0f0f10] shadow-[-4px_0_32px_rgba(0,0,0,0.45)] lg:hidden"
+                className="theme-transition ws-panel fixed inset-y-0 right-0 z-[90] flex w-[82vw] max-w-[360px] flex-col border-l shadow-[-4px_0_32px_rgba(0,0,0,0.45)] lg:hidden"
                 initial={{ x: '100%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '100%' }}
                 transition={springTransition}
               >
                 {/* Drawer header */}
-                <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-3">
+                <div className="border-ws flex shrink-0 items-center justify-between border-b px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Clapperboard className="h-4 w-4 text-sky-400" />
-                    <h2 className="text-[14px] font-semibold text-slate-100">剪辑状态</h2>
+                    <h2 className="text-ws-primary text-[14px] font-semibold">剪辑状态</h2>
                   </div>
                   <button
                     ref={closeButtonRef}
                     type="button"
                     onClick={onCloseDrawer}
                     aria-label="关闭剪辑状态"
-                    className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b] text-slate-400 transition hover:border-slate-600 hover:text-white"
+                    className="theme-transition ws-card text-ws-muted hover:text-ws-primary flex h-8 w-8 items-center justify-center rounded-full border"
                   >
                     <X className="h-4 w-4" />
                   </button>

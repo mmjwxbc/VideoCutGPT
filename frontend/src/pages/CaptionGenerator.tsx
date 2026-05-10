@@ -93,7 +93,7 @@ const CaptionGenerator: React.FC = () => {
   const [productManual, setProductManual] = useState<string>('');
   const [sellingPointsOpen, setSellingPointsOpen] = useState<boolean>(false);
   const [draftPrompt, setDraftPrompt] = useState<string>(
-    '请先生成适合投放的英文字幕初稿，并输出20s镜头级剪辑方案。最后剪辑导出视频',
+    '请先生成适合投放的视频剪辑方案，并输出20s镜头级剪辑方案。最后剪辑导出视频',
   );
   const [session, setSession] = useState<CaptionAssistantSession | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -526,7 +526,7 @@ const CaptionGenerator: React.FC = () => {
     setProductManual('');
     setAnalysisMode('keyframe');
     setSellingPointsOpen(false);
-    setDraftPrompt('请先生成适合投放的英文字幕初稿，并输出20s镜头级剪辑方案。最后剪辑导出视频');
+    setDraftPrompt('请先生成适合投放的视频剪辑方案，并输出20s镜头级剪辑方案。最后剪辑导出视频');
     setComposerMode('initial');
     setActiveDrawer(null);
     setLoading(false);
@@ -809,7 +809,7 @@ const CaptionGenerator: React.FC = () => {
     </>
   ) : null;
   return (
-    <div className="h-screen min-h-0 overflow-hidden bg-[#090909]">
+    <div className="ws-shell relative h-screen min-h-0 overflow-hidden">
       <div
         className={`grid h-full min-h-0 ${historySidebarCollapsed
             ? 'lg:grid-cols-[72px_minmax(0,1fr)_368px]'

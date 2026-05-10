@@ -84,14 +84,14 @@ const UploadProgressRing: React.FC<{
     );
 
   return (
-    <div className="absolute bottom-1.5 right-1.5 flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b]/90 backdrop-blur-sm">
+    <div className="theme-transition ws-card-contrast border-ws-strong absolute bottom-1.5 right-1.5 flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-sm">
       <svg className="absolute inset-0 -rotate-90" viewBox="0 0 36 36" aria-hidden="true">
         <circle
           cx="18"
           cy="18"
           r={PROGRESS_RADIUS}
           fill="none"
-          stroke="rgba(255,255,255,0.16)"
+          stroke="rgba(148,163,184,0.2)"
           strokeWidth="3"
         />
         <circle
@@ -252,11 +252,11 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
 
   return (
     <div className={cn('w-full', className)}>
-      <div className="mx-auto min-h-[96px] w-full max-w-[960px] rounded-[28px] bg-[#212121] px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
+      <div className="theme-transition ws-card mx-auto min-h-[96px] w-full max-w-[960px] rounded-[28px] border px-4 py-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.18)]">
         {uploadPreviews.length ? (
           <div className="mb-3 flex flex-col gap-3">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] text-slate-400">
+              <p className="text-ws-muted text-[11px]">
                 {uploadPreviews.length === 1
                   ? '1 个视频待上传'
                   : `${uploadPreviews.length} 个视频待上传，可拖拽调整顺序`}
@@ -267,7 +267,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                   onClick={onClearUploadPreview}
                   disabled={toolsDisabled}
                   aria-label="移除附件"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b] text-white transition hover:bg-[#343434] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="theme-transition ws-card-muted text-ws-primary inline-flex h-7 w-7 items-center justify-center rounded-full border disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -316,10 +316,10 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                     }}
                     disabled={toolsDisabled}
                     className={cn(
-                      'group relative flex w-[84px] shrink-0 flex-col overflow-hidden rounded-2xl border bg-[#262626] text-left transition',
+                      'theme-transition ws-card-muted group relative flex w-[84px] shrink-0 flex-col overflow-hidden rounded-2xl border text-left transition',
                       isActive
                         ? 'border-sky-500/50 shadow-[0_0_0_1px_rgba(14,165,233,0.25)]'
-                        : 'border-white/10 hover:border-white/20',
+                        : 'hover:border-ws-strong',
                       isDragOver && 'border-emerald-400/60 shadow-[0_0_0_1px_rgba(52,211,153,0.35)]',
                       isDragging && 'scale-[0.98] opacity-50',
                       toolsDisabled && 'cursor-not-allowed opacity-60',
@@ -340,7 +340,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                       {(preview.status === 'uploading' ||
                         preview.status === 'processing' ||
                         preview.status === 'failed') ? (
-                        <div className="absolute inset-0 bg-[#1f1f1f]/40" />
+                        <div className="absolute inset-0 bg-black/30" />
                       ) : null}
                       <UploadStatusBadge status={preview.status} />
                       <UploadProgressRing
@@ -349,7 +349,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                       />
                     </div>
                     <div className="px-2 py-1.5">
-                      <p className="line-clamp-2 text-[10px] leading-4 text-slate-300">
+                      <p className="text-ws-secondary line-clamp-2 text-[10px] leading-4">
                         {preview.name}
                       </p>
                     </div>
@@ -371,15 +371,15 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                 setPlatformMenuOpen((current) => !current);
               }}
               disabled={toolsDisabled}
-              className="inline-flex h-9 items-center gap-2 rounded-full border border-white/10 bg-[#2b2b2b] px-3 text-[12px] font-medium text-slate-200 transition hover:bg-[#343434] disabled:cursor-not-allowed disabled:opacity-50"
+              className="theme-transition ws-card-muted text-ws-secondary hover:text-ws-primary inline-flex h-9 items-center gap-2 rounded-full border px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
             >
               <span className={cn('h-2.5 w-2.5 rounded-full', activePlatform.iconClassName)} />
               <span>{activePlatform.label}</span>
-              <ChevronDown className="h-4 w-4 text-slate-400" />
+              <ChevronDown className="text-ws-soft h-4 w-4" />
             </button>
 
             {platformMenuOpen ? (
-              <div className="absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded-2xl border border-white/10 bg-[#242424] p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.32)]">
+              <div className="theme-transition ws-card absolute bottom-full left-0 z-20 mb-2 min-w-[180px] rounded-2xl border p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.32)]">
                 {platformOptions.map((option) => (
                   <button
                     key={option.value}
@@ -388,7 +388,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                       onPlatformChange(option.value);
                       setPlatformMenuOpen(false);
                     }}
-                    className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 transition hover:bg-[#303030]"
+                    className="theme-transition text-ws-secondary hover:bg-[var(--workspace-card-muted)] hover:text-ws-primary flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px]"
                   >
                     <span className={cn('h-2.5 w-2.5 rounded-full', option.iconClassName)} />
                     <span>{option.label}</span>
@@ -402,7 +402,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             type="button"
             onClick={onUploadClick}
             disabled={toolsDisabled}
-            className="inline-flex h-9 items-center rounded-full border border-white/10 bg-[#2b2b2b] px-3 text-[12px] font-medium text-slate-200 transition hover:bg-[#343434] disabled:cursor-not-allowed disabled:opacity-50"
+            className="theme-transition ws-card-muted text-ws-secondary hover:text-ws-primary inline-flex h-9 items-center rounded-full border px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Paperclip className="mr-2 h-4 w-4" />
             Upload
@@ -416,14 +416,14 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
               'inline-flex h-9 items-center gap-2 rounded-full border px-3 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-50',
               sellingPointsOpen || sellingPointsValue.trim()
                 ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
-                : 'border-white/10 bg-[#2b2b2b] text-slate-200 hover:bg-[#343434]',
+                : 'ws-card-muted text-ws-secondary hover:text-ws-primary',
             )}
           >
             <Sparkles className="h-4 w-4" />
             <span>Selling Points</span>
           </button>
 
-          <div className="inline-flex rounded-full border border-white/10 bg-[#2b2b2b] p-1">
+          <div className="theme-transition ws-card-muted inline-flex rounded-full border p-1">
             {([
               ['keyframe', '关键帧'],
               ['every_second', '逐帧分析'],
@@ -439,7 +439,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
                     'inline-flex h-7 items-center justify-center rounded-full px-3 text-[11px] font-medium transition',
                     selected
                       ? 'bg-sky-500/15 text-sky-200'
-                      : 'text-slate-400 hover:text-slate-200',
+                      : 'text-ws-soft hover:text-ws-secondary',
                     toolsDisabled && 'cursor-not-allowed opacity-50',
                   )}
                 >
@@ -451,13 +451,13 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
         </div>
 
         {sellingPointsOpen ? (
-          <div className="mb-3 rounded-2xl border border-white/10 bg-[#2b2b2b] px-3 py-2.5">
+          <div className="theme-transition ws-input mb-3 rounded-2xl border px-3 py-2.5">
             <input
               value={sellingPointsValue}
               onChange={(event) => onSellingPointsChange(event.target.value)}
               disabled={toolsDisabled}
               placeholder="输入卖点、参数、品牌语气、禁用词"
-              className="w-full bg-transparent text-[12px] text-slate-100 placeholder:text-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+              className="text-ws-primary placeholder:text-ws-soft w-full bg-transparent text-[12px] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
         ) : null}
@@ -468,7 +468,7 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             onClick={onUploadClick}
             disabled={toolsDisabled}
             aria-label="添加附件"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b] text-slate-200 transition hover:bg-[#343434] disabled:cursor-not-allowed disabled:opacity-50"
+            className="theme-transition ws-card-muted text-ws-secondary hover:text-ws-primary flex h-8 w-8 shrink-0 items-center justify-center rounded-full border disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
           </button>
@@ -481,24 +481,24 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             disabled={disabled}
             rows={1}
             placeholder={placeholder}
-            className="min-h-[24px] flex-1 resize-none overflow-y-hidden bg-transparent px-0 py-2 text-[14px] leading-6 text-white placeholder:text-slate-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            className="text-ws-primary placeholder:text-ws-soft min-h-[24px] flex-1 resize-none overflow-y-hidden bg-transparent px-0 py-2 text-[14px] leading-6 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
             style={{ maxHeight: MAX_TEXTAREA_HEIGHT }}
           />
 
           <button
             type="button"
             disabled
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-[#2b2b2b] px-2.5 text-[12px] font-medium text-slate-200 transition hover:bg-[#343434]"
+            className="theme-transition ws-card-muted text-ws-secondary inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[12px] font-medium"
           >
             <span className="hidden max-w-[70px] truncate sm:inline">{modeLabel}</span>
-            <ChevronDown className="h-4 w-4 text-slate-400" />
+            <ChevronDown className="text-ws-soft h-4 w-4" />
           </button>
 
           <button
             type="button"
             disabled
             aria-label="语音输入"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-[#2b2b2b] text-slate-300 transition hover:bg-[#343434] disabled:cursor-default"
+            className="theme-transition ws-card-muted text-ws-secondary flex h-9 w-9 shrink-0 items-center justify-center rounded-full border disabled:cursor-default"
           >
             <Mic className="h-4 w-4" />
           </button>
@@ -511,8 +511,8 @@ const ChatComposer: React.FC<ChatComposerProps> = ({
             className={cn(
               'flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition',
               isSubmitting || (hasText && !disabled)
-                ? 'bg-white text-black hover:bg-slate-100'
-                : 'bg-[#3a3a3a] text-[#777777]',
+                ? 'bg-[var(--workspace-text-primary)] text-[var(--workspace-shell)] hover:opacity-92'
+                : 'bg-[var(--workspace-card-contrast)] text-[var(--workspace-text-soft)]',
             )}
           >
             {isSubmitting ? (

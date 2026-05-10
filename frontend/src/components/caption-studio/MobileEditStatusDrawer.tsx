@@ -28,7 +28,7 @@ interface MobileEditStatusDrawerProps {
 
 const STEP_CONFIG = [
   { key: 'keyframe_analysis', label: '分析视频', icon: Film },
-  { key: 'subtitle_draft', label: '生成字幕', icon: Subtitles },
+  { key: 'subtitle_draft', label: '生成剪辑草稿', icon: Subtitles },
   { key: 'editing_plan', label: '生成剪辑方案', icon: Clapperboard },
   { key: 'edited_video', label: '导出视频', icon: Video },
 ] as const;
@@ -59,8 +59,8 @@ const StepIcon: React.FC<{ status: string; Icon: React.FC<React.SVGProps<SVGSVGE
     );
   }
   return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#1b1b1b]">
-      <Icon className="h-4 w-4 text-slate-500" />
+    <div className="theme-transition ws-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-full border">
+      <Icon className="text-ws-soft h-4 w-4" />
     </div>
   );
 };
@@ -75,12 +75,12 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
   if (!session || !state) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center py-12 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-800 bg-[#151515]">
-          <Clapperboard className="h-6 w-6 text-slate-600" />
+        <div className="theme-transition ws-empty flex h-14 w-14 items-center justify-center rounded-2xl border">
+          <Clapperboard className="text-ws-soft h-6 w-6" />
         </div>
-        <p className="mt-4 text-[13px] font-medium text-slate-300">暂无剪辑任务</p>
-        <p className="mt-1.5 max-w-[220px] text-[11px] leading-5 text-slate-500">
-          提交任务后，这里会展示工具调用、字幕生成和导出进度
+        <p className="text-ws-secondary mt-4 text-[13px] font-medium">暂无剪辑任务</p>
+        <p className="text-ws-soft mt-1.5 max-w-[220px] text-[11px] leading-5">
+          提交任务后，这里会展示工具调用、视频剪辑和导出进度
         </p>
       </div>
     );
@@ -92,23 +92,23 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Current session card */}
-      <div className="shrink-0 border-b border-slate-800 px-4 py-3">
-        <div className="rounded-2xl border border-slate-800 bg-[#171717] px-3 py-2.5">
+      <div className="border-ws shrink-0 border-b px-4 py-3">
+        <div className="theme-transition ws-card rounded-2xl border px-3 py-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-[#111111] text-slate-300 shadow-sm">
+              <div className="theme-transition ws-icon text-ws-secondary flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-sm">
                 <Sparkles className="h-3.5 w-3.5" />
               </div>
-              <p className="truncate text-[13px] font-semibold text-slate-100">
+              <p className="text-ws-primary truncate text-[13px] font-semibold">
                 {activeSessionTitle}
               </p>
             </div>
-            <span className="shrink-0 rounded-full border border-slate-700 bg-[#111111] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-400">
+            <span className="theme-transition ws-chip text-ws-muted shrink-0 rounded-full border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em]">
               {session.status}
             </span>
           </div>
           {state.request_summary ? (
-            <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-slate-400">
+            <p className="text-ws-muted mt-2 line-clamp-2 text-[11px] leading-4">
               {state.request_summary}
             </p>
           ) : null}
@@ -117,7 +117,7 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
 
       {/* Workflow stepper */}
       <div className="flex-1 overflow-y-auto px-4 py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+        <p className="text-ws-soft mb-3 text-[10px] font-semibold uppercase tracking-[0.2em]">
           工作流进度
         </p>
         <div className="space-y-0">
@@ -145,15 +145,15 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
                 {/* Step content */}
                 <div className={`min-w-0 flex-1 ${isLast ? '' : 'pb-4'}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-[12px] font-medium text-slate-200">{step.label}</p>
+                    <p className="text-ws-secondary text-[12px] font-medium">{step.label}</p>
                     <span
                       className={`h-2 w-2 rounded-full ${getWorkflowStatusTone(status)}`}
                     />
                   </div>
                   {detail ? (
-                    <p className="mt-1 text-[11px] leading-4 text-slate-500">{detail}</p>
+                    <p className="text-ws-soft mt-1 text-[11px] leading-4">{detail}</p>
                   ) : null}
-                  <span className="mt-0.5 inline-block text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                  <span className="text-ws-soft mt-0.5 inline-block text-[10px] uppercase tracking-[0.14em]">
                     {getWorkflowStatusLabel(status)}
                   </span>
                 </div>
@@ -165,40 +165,40 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
         {/* Artifacts section */}
         {(state.subtitle_draft.trim() || state.editing_plan.trim() || state.english_title.trim()) ? (
           <div className="mt-5">
-            <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+            <p className="text-ws-soft mb-3 text-[10px] font-semibold uppercase tracking-[0.2em]">
               当前产物
             </p>
             <div className="space-y-2">
               {state.subtitle_draft.trim() ? (
-                <details className="group rounded-2xl border border-slate-800 bg-[#171717]">
+                <details className="theme-transition group rounded-2xl border ws-card">
                   <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2">
-                    <span className="text-[11px] font-medium text-slate-200">字幕草稿</span>
-                    <span className="text-[10px] text-slate-500">展开</span>
+                    <span className="text-ws-secondary text-[11px] font-medium">剪辑草稿</span>
+                    <span className="text-ws-soft text-[10px]">展开</span>
                   </summary>
-                  <div className="border-t border-slate-800 px-3 py-2">
-                    <pre className="whitespace-pre-wrap break-words font-sans text-[11px] leading-5 text-slate-300">
+                  <div className="border-ws border-t px-3 py-2">
+                    <pre className="text-ws-secondary whitespace-pre-wrap break-words font-sans text-[11px] leading-5">
                       {state.subtitle_draft.trim()}
                     </pre>
                   </div>
                 </details>
               ) : null}
               {state.editing_plan.trim() ? (
-                <details className="group rounded-2xl border border-slate-800 bg-[#171717]">
+                <details className="theme-transition group rounded-2xl border ws-card">
                   <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2">
-                    <span className="text-[11px] font-medium text-slate-200">剪辑方案</span>
-                    <span className="text-[10px] text-slate-500">展开</span>
+                    <span className="text-ws-secondary text-[11px] font-medium">剪辑方案</span>
+                    <span className="text-ws-soft text-[10px]">展开</span>
                   </summary>
-                  <div className="border-t border-slate-800 px-3 py-2">
-                    <pre className="whitespace-pre-wrap break-words font-sans text-[11px] leading-5 text-slate-300">
+                  <div className="border-ws border-t px-3 py-2">
+                    <pre className="text-ws-secondary whitespace-pre-wrap break-words font-sans text-[11px] leading-5">
                       {state.editing_plan.trim()}
                     </pre>
                   </div>
                 </details>
               ) : null}
               {state.english_title.trim() ? (
-                <div className="rounded-2xl border border-slate-800 bg-[#171717] px-3 py-2">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">英文标题</p>
-                  <p className="mt-1 text-[12px] text-slate-300">{state.english_title.trim()}</p>
+                <div className="theme-transition ws-card rounded-2xl border px-3 py-2">
+                  <p className="text-ws-soft text-[10px] uppercase tracking-[0.14em]">英文标题</p>
+                  <p className="text-ws-secondary mt-1 text-[12px]">{state.english_title.trim()}</p>
                 </div>
               ) : null}
             </div>
@@ -208,11 +208,11 @@ const MobileEditStatusDrawer: React.FC<MobileEditStatusDrawerProps> = ({
         {/* Export section */}
         {editedVideoState?.download_url || editedVideoState?.error_message ? (
           <div className="mt-5">
-            <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+            <p className="text-ws-soft mb-3 text-[10px] font-semibold uppercase tracking-[0.2em]">
               导出成片
             </p>
-            <div className="rounded-2xl border border-slate-800 bg-[#171717] px-3 py-2.5">
-              <p className="text-[12px] text-slate-200">
+            <div className="theme-transition ws-card rounded-2xl border px-3 py-2.5">
+              <p className="text-ws-secondary text-[12px]">
                 {editedVideoState.file_name || '暂未生成导出文件'}
               </p>
               {editedVideoState.error_message ? (
