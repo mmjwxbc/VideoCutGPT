@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.agent.runtime import LightPlanningReActRuntime
+from app.agent.runtime import AgentRunSpec, AgentRunner
 from app.core.config import settings
 from app.models import AgentTurn, CaptionSession, GlobalEditingState
 from app.services.caption_assistant_runtime.shared import parse_json_object
@@ -51,27 +51,24 @@ class VideoEditExportSubAgent:
             working_state=working_state,
             user_prompt=user_prompt,
         )
-        runtime = LightPlanningReActRuntime(
+        runner = AgentRunner(
             adapter=assistant.completion_service.adapter_factory.get_text_adapter(),
-            model=settings.deepseek_chat_model,
-            tool_registry=registry,
-            max_steps=20,
-            timeout_seconds=settings.glm_request_timeout_seconds,
         )
-        result = await runtime.run(
-            user_prompt=user_prompt,
-            task_brief=assistant.build_video_edit_task_brief(session, turn, working_state, user_prompt),
-            context_prompt=assistant.build_video_edit_context_prompt(session, turn, working_state),
-            completion_guard=assistant.build_video_edit_completion_guard(working_state),
-            fallback_step=assistant.build_video_edit_fallback_step(session, turn, working_state),
-            should_skip_step=assistant.build_video_edit_step_skipper(),
-            progress=assistant.noop_progress,
-            trace=lambda thought, _action, observation: assistant.append_turn_thought(
-                session,
-                turn,
-                thought,
-                observation,
-            ),
+        result = await runner.run(
+            AgentRunSpec(
+                mode="react_json",
+                model=settings.deepseek_chat_model,
+                tool_registry=registry,
+                max_iterations=20,
+                timeout_seconds=settings.glm_request_timeout_seconds,
+                user_prompt=user_prompt,
+                task_brief=assistant.build_video_edit_task_brief(session, turn, working_state, user_prompt),
+                context_prompt=assistant.build_video_edit_context_prompt(session, turn, working_state),
+                completion_guard=assistant.build_video_edit_completion_guard(working_state),
+                fallback_step=assistant.build_video_edit_fallback_step(session, turn, working_state),
+                should_skip_step=assistant.build_video_edit_step_skipper(),
+                hook=assistant.build_agent_hook(session, turn),
+            )
         )
         if working_state.edited_video.download_url:
             assistant.task_board_service.set_task_status(

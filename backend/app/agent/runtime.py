@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Type
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Type
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -65,8 +65,9 @@ def _runtime_block(title: str, content: str) -> str:
 
 ToolFunc = Callable[[BaseModel], Awaitable[str]]
 ProgressFunc = Callable[[str], Awaitable[None]]
-TraceFunc = Callable[[str, str, str], Awaitable[None]]
 PlannerStreamFunc = Callable[[str, str], Awaitable[None]]
+CompletionGuard = Callable[[List[Dict[str, str]]], bool]
+AgentMode = Literal["openai_tools", "react_json"]
 
 
 class BaseTool(ABC):
@@ -139,20 +140,18 @@ class ToolRegistry:
         return name in self.tools
 
     def render_prompt(self) -> str:
-        lines = []
-        for tool in self.tools.values():
-            lines.append(f"- {tool.name}: {tool.description}")
-        return "\n".join(lines)
+        return "\n".join(f"- {tool.name}: {tool.description}" for tool in self.tools.values())
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
-        return self.get_definitions()
-
-    def get_definitions(self) -> list[dict[str, Any]]:
         if self._cached_definitions is None:
             self._cached_definitions = [tool.to_openai_tool() for tool in self.tools.values()]
         return self._cached_definitions
 
-    def prepare_call(self, name: str, arguments: str | None) -> tuple[BaseTool | ToolSpec | None, str, BaseModel | None, str | None]:
+    def prepare_call(
+        self,
+        name: str,
+        arguments: str | None,
+    ) -> tuple[BaseTool | ToolSpec | None, str, BaseModel | None, str | None]:
         normalized_input = (arguments or "").strip() or "{}"
         try:
             tool = self.get(name)
@@ -202,17 +201,6 @@ class ReActStep:
     action_input: str
 
 
-@dataclass(slots=True)
-class LightPlanningReActResult:
-    scratchpad: List[Dict[str, str]]
-
-
-@dataclass(slots=True)
-class OpenAIToolCallingResult:
-    scratchpad: List[Dict[str, str]]
-    final_text: str = ""
-
-
 class ToolResult(BaseModel):
     ok: bool
     summary: str
@@ -232,35 +220,104 @@ class ToolResult(BaseModel):
 
 
 @dataclass(slots=True)
+class ToolCallRequest:
+    name: str
+    arguments: str
+
+
+@dataclass(slots=True)
+class AgentHookContext:
+    iteration: int
+    messages: list[dict[str, Any]]
+    scratchpad: list[dict[str, str]]
+    response_content: str = ""
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    tool_results: list[str] = field(default_factory=list)
+    tool_events: list[dict[str, str]] = field(default_factory=list)
+    final_content: str | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+
+
+class AgentHook:
+    def wants_streaming(self) -> bool:
+        return False
+
+    async def before_iteration(self, context: AgentHookContext) -> None:
+        pass
+
+    async def on_progress(self, context: AgentHookContext, message: str) -> None:
+        pass
+
+    async def on_stream(self, context: AgentHookContext, delta: str) -> None:
+        pass
+
+    async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
+        pass
+
+    async def before_execute_tools(self, context: AgentHookContext) -> None:
+        pass
+
+    async def after_iteration(self, context: AgentHookContext) -> None:
+        pass
+
+    def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
+        return content
+
+
+@dataclass(slots=True)
 class AgentRunSpec:
+    mode: AgentMode
     model: str
-    system_prompt: str
+    tool_registry: ToolRegistry
+    max_iterations: int
     user_prompt: str
     task_brief: str
     context_prompt: str
-    tool_registry: ToolRegistry
-    max_steps: int
-    progress: ProgressFunc
-    trace: TraceFunc
-    completion_guard: Callable[[List[Dict[str, str]]], bool] | None = None
+    system_prompt: str = ""
+    timeout_seconds: int = 120
+    completion_guard: CompletionGuard | None = None
+    fallback_step: Callable[[List[Dict[str, str]]], ReActStep] | None = None
+    should_skip_step: Callable[[ReActStep, List[Dict[str, str]]], bool] | None = None
+    planner_stream: PlannerStreamFunc | None = None
+    progress_callback: ProgressFunc | None = None
+    hook: AgentHook | None = None
 
 
 @dataclass(slots=True)
 class AgentRunResult:
     scratchpad: List[Dict[str, str]]
-    final_text: str = ""
+    final_content: str = ""
     stop_reason: str = "completed"
     tools_used: List[str] = field(default_factory=list)
+    messages: List[dict[str, Any]] = field(default_factory=list)
+    tool_events: list[dict[str, str]] = field(default_factory=list)
 
 
 class AgentRunner:
-    def __init__(self, client: AsyncOpenAI) -> None:
+    def __init__(
+        self,
+        *,
+        client: AsyncOpenAI | None = None,
+        adapter: AIAdapter | None = None,
+    ) -> None:
         self._client = client
+        self._adapter = adapter
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
+        if spec.mode == "openai_tools":
+            return await self._run_openai_tools(spec)
+        if spec.mode == "react_json":
+            return await self._run_react_json(spec)
+        raise ValueError(f"unsupported agent run mode: {spec.mode}")
+
+    async def _run_openai_tools(self, spec: AgentRunSpec) -> AgentRunResult:
+        if self._client is None:
+            raise ValueError("openai client is not configured")
+        hook = spec.hook or AgentHook()
         scratchpad: List[Dict[str, str]] = []
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": spec.system_prompt.strip()},
+            {"role": "system", "content": (spec.system_prompt or OPENAI_TOOL_CALLING_PROMPT_PREFIX).strip()},
             {
                 "role": "user",
                 "content": (
@@ -271,11 +328,20 @@ class AgentRunner:
             },
         ]
         final_text = ""
-        stop_reason = "max_steps"
+        stop_reason = "max_iterations"
         tools_used: List[str] = []
+        tool_events: list[dict[str, str]] = []
+        context = AgentHookContext(iteration=0, messages=messages, scratchpad=scratchpad)
 
-        for _ in range(spec.max_steps):
-            await spec.progress("Agent 正在规划下一步执行动作...")
+        for iteration in range(spec.max_iterations):
+            context.iteration = iteration
+            context.response_content = ""
+            context.tool_calls = []
+            context.tool_results = []
+            context.tool_events = []
+            await hook.before_iteration(context)
+            await self._emit_progress(spec, hook, context, "Agent 正在规划下一步执行动作...")
+
             response = await self._client.chat.completions.create(
                 model=spec.model,
                 messages=messages,
@@ -284,25 +350,36 @@ class AgentRunner:
             )
             message = response.choices[0].message
             assistant_content = self._message_text(message.content)
+            context.response_content = assistant_content
             messages.append(self._serialize_assistant_message(message, assistant_content))
 
-            if not message.tool_calls:
+            if message.tool_calls:
+                context.tool_calls = [
+                    ToolCallRequest(
+                        name=tool_call.function.name,
+                        arguments=tool_call.function.arguments,
+                    )
+                    for tool_call in message.tool_calls
+                ]
+                await hook.before_execute_tools(context)
+            else:
                 final_text = assistant_content.strip()
                 stop_reason = "final_response"
                 break
 
             for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name
-                resolved_tool_name = tool_name
+                requested_tool = tool_call.function.name
+                resolved_tool_name = requested_tool
                 resolved_arguments = tool_call.function.arguments
                 forced_action = self._forced_action_for_requested_tool(
-                    requested_tool=tool_name,
+                    requested_tool=requested_tool,
                     scratchpad=scratchpad,
                 )
                 if forced_action is not None:
                     resolved_tool_name = forced_action["tool"]
                     resolved_arguments = json.dumps(forced_action.get("input", {}), ensure_ascii=False)
-                await spec.progress(self._progress_text_for_action(resolved_tool_name))
+
+                await self._emit_progress(spec, hook, context, self._progress_text_for_action(resolved_tool_name))
                 observation, normalized_input = await spec.tool_registry.execute(
                     resolved_tool_name,
                     resolved_arguments,
@@ -317,7 +394,10 @@ class AgentRunner:
                 )
                 if resolved_tool_name not in tools_used:
                     tools_used.append(resolved_tool_name)
-                await spec.trace(assistant_content, resolved_tool_name, observation)
+                tool_event = self._build_tool_event(resolved_tool_name, observation)
+                tool_events.append(tool_event)
+                context.tool_results.append(observation)
+                context.tool_events.append(tool_event)
                 messages.append(
                     {
                         "role": "tool",
@@ -326,25 +406,255 @@ class AgentRunner:
                     }
                 )
                 await self._follow_required_action(
+                    spec=spec,
+                    hook=hook,
+                    context=context,
+                    thought=assistant_content,
                     observation=observation,
                     scratchpad=scratchpad,
                     messages=messages,
-                    tool_registry=spec.tool_registry,
-                    progress=spec.progress,
-                    trace=spec.trace,
                     tools_used=tools_used,
+                    tool_events=tool_events,
                 )
 
             if spec.completion_guard and spec.completion_guard(scratchpad):
                 stop_reason = "completion_guard"
                 break
 
+            await hook.after_iteration(context)
+
+        if stop_reason != "final_response":
+            await hook.after_iteration(context)
+        final_text = hook.finalize_content(context, final_text) or ""
         return AgentRunResult(
             scratchpad=scratchpad,
-            final_text=final_text,
+            final_content=final_text,
             stop_reason=stop_reason,
             tools_used=tools_used,
+            messages=messages,
+            tool_events=tool_events,
         )
+
+    async def _run_react_json(self, spec: AgentRunSpec) -> AgentRunResult:
+        if self._adapter is None:
+            raise ValueError("ai adapter is not configured")
+        if spec.fallback_step is None:
+            raise ValueError("react_json mode requires fallback_step")
+        hook = spec.hook or AgentHook()
+        scratchpad: List[Dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
+        final_text = ""
+        stop_reason = "max_iterations"
+        tools_used: List[str] = []
+        tool_events: list[dict[str, str]] = []
+        context = AgentHookContext(iteration=0, messages=messages, scratchpad=scratchpad)
+
+        for iteration in range(spec.max_iterations):
+            context.iteration = iteration
+            context.response_content = ""
+            context.tool_calls = []
+            context.tool_results = []
+            context.tool_events = []
+            await hook.before_iteration(context)
+            await self._emit_progress(spec, hook, context, "Agent 正在规划下一步执行动作...")
+
+            step = await self._next_react_step(spec, hook, context, scratchpad)
+            if not step.action:
+                step = spec.fallback_step(scratchpad)
+            if step.action == "finalize":
+                if spec.completion_guard and spec.completion_guard(scratchpad):
+                    stop_reason = "completion_guard"
+                else:
+                    fallback_step = spec.fallback_step(scratchpad)
+                    if fallback_step.action == "finalize":
+                        stop_reason = "finalize"
+                    else:
+                        step = fallback_step
+                if stop_reason != "max_iterations":
+                    break
+
+            if spec.should_skip_step and spec.should_skip_step(step, scratchpad):
+                fallback_step = spec.fallback_step(scratchpad)
+                if fallback_step.action == "finalize":
+                    stop_reason = "finalize"
+                    break
+                step = fallback_step
+
+            forced_action = self._forced_action_for_requested_tool(
+                requested_tool=step.action,
+                scratchpad=scratchpad,
+            )
+            if forced_action is not None:
+                step = ReActStep(
+                    thought=f"工具 {step.action} 当前不允许直接重试，先执行修复动作。",
+                    action=forced_action["tool"],
+                    action_input=json.dumps(forced_action.get("input", {}), ensure_ascii=False),
+                )
+
+            if not spec.tool_registry.has(step.action):
+                fallback_step = spec.fallback_step(scratchpad)
+                if fallback_step.action == "finalize":
+                    stop_reason = "finalize"
+                    break
+                step = fallback_step
+
+            context.response_content = step.thought
+            context.tool_calls = [ToolCallRequest(name=step.action, arguments=step.action_input)]
+            await hook.before_execute_tools(context)
+            await self._emit_progress(spec, hook, context, self._progress_text_for_action(step.action))
+            observation, normalized_input = await spec.tool_registry.execute(step.action, step.action_input)
+            scratchpad.append(
+                {
+                    "thought": step.thought,
+                    "action": step.action,
+                    "action_input": normalized_input,
+                    "observation": observation,
+                }
+            )
+            if step.action not in tools_used:
+                tools_used.append(step.action)
+            tool_event = self._build_tool_event(step.action, observation)
+            tool_events.append(tool_event)
+            context.tool_results.append(observation)
+            context.tool_events.append(tool_event)
+            await self._follow_required_action(
+                spec=spec,
+                hook=hook,
+                context=context,
+                thought=step.thought,
+                observation=observation,
+                scratchpad=scratchpad,
+                messages=messages,
+                tools_used=tools_used,
+                tool_events=tool_events,
+            )
+
+            if spec.completion_guard and spec.completion_guard(scratchpad):
+                stop_reason = "completion_guard"
+                await hook.after_iteration(context)
+                break
+
+            await hook.after_iteration(context)
+
+        final_text = hook.finalize_content(context, final_text) or ""
+        return AgentRunResult(
+            scratchpad=scratchpad,
+            final_content=final_text,
+            stop_reason=stop_reason,
+            tools_used=tools_used,
+            messages=messages,
+            tool_events=tool_events,
+        )
+
+    async def _next_react_step(
+        self,
+        spec: AgentRunSpec,
+        hook: AgentHook,
+        context: AgentHookContext,
+        scratchpad: List[Dict[str, str]],
+    ) -> ReActStep:
+        assert self._adapter is not None
+        prompt = (
+            REACT_AGENT_PROMPT_PREFIX
+            + _runtime_block("可用工具", spec.tool_registry.render_prompt())
+            + _runtime_block("用户需求", spec.user_prompt)
+            + _runtime_block("本轮任务简报", spec.task_brief)
+            + _runtime_block("上下文", spec.context_prompt)
+            + _runtime_block("已有观察", json.dumps(scratchpad, ensure_ascii=False))
+        )
+        content = ""
+        pending_delta = ""
+        last_emit_chars = 0
+        async for delta in self._adapter.stream(
+            AICompletionRequest(
+                model=spec.model,
+                timeout_seconds=spec.timeout_seconds,
+                require_json=True,
+                messages=[AIMessage(role="user", content=prompt)],
+            )
+        ):
+            if not delta:
+                continue
+            content += delta
+            pending_delta += delta
+            if hook.wants_streaming():
+                await hook.on_stream(context, delta)
+            if spec.planner_stream and len(content) - last_emit_chars >= 40:
+                await spec.planner_stream(content, pending_delta)
+                pending_delta = ""
+                last_emit_chars = len(content)
+        if hook.wants_streaming():
+            await hook.on_stream_end(context, resuming=False)
+        if spec.planner_stream and pending_delta:
+            await spec.planner_stream(content, pending_delta)
+        parsed = self._parse_json_object(content)
+        if not isinstance(parsed, dict):
+            return ReActStep(thought="", action="", action_input="")
+        return ReActStep(
+            thought=str(parsed.get("thought", "")).strip(),
+            action=str(parsed.get("action", "")).strip(),
+            action_input=str(parsed.get("action_input", "")).strip(),
+        )
+
+    async def _follow_required_action(
+        self,
+        *,
+        spec: AgentRunSpec,
+        hook: AgentHook,
+        context: AgentHookContext,
+        thought: str,
+        observation: str,
+        scratchpad: List[Dict[str, str]],
+        messages: list[dict[str, Any]],
+        tools_used: List[str],
+        tool_events: list[dict[str, str]],
+    ) -> None:
+        result = self._parse_tool_result(observation)
+        if not result or result.ok or not result.required_action:
+            return
+        forced_tool = str(result.required_action.get("tool", "")).strip()
+        forced_input = result.required_action.get("input") or {}
+        if not forced_tool or not spec.tool_registry.has(forced_tool):
+            return
+
+        await self._emit_progress(spec, hook, context, self._progress_text_for_action(forced_tool))
+        serialized_input = json.dumps(forced_input, ensure_ascii=False)
+        forced_observation, normalized_input = await spec.tool_registry.execute(forced_tool, serialized_input)
+        scratchpad.append(
+            {
+                "thought": f"根据工具失败结果，直接执行修复动作 {forced_tool}。",
+                "action": forced_tool,
+                "action_input": normalized_input,
+                "observation": forced_observation,
+            }
+        )
+        if forced_tool not in tools_used:
+            tools_used.append(forced_tool)
+        forced_event = self._build_tool_event(forced_tool, forced_observation)
+        tool_events.append(forced_event)
+        context.tool_results.append(forced_observation)
+        context.tool_events.append(forced_event)
+        if messages is not None:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"系统已根据工具失败结果自动执行修复动作 {forced_tool}。"
+                        f"\n修复动作结果：{forced_observation}"
+                    ),
+                }
+            )
+
+    async def _emit_progress(
+        self,
+        spec: AgentRunSpec,
+        hook: AgentHook,
+        context: AgentHookContext,
+        message: str,
+    ) -> None:
+        if spec.progress_callback is not None:
+            await spec.progress_callback(message)
+        await hook.on_progress(context, message)
 
     def _serialize_assistant_message(self, message: Any, assistant_content: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -378,65 +688,61 @@ class AgentRunner:
             return "\n".join(part for part in parts if part)
         return ""
 
-    def _progress_text_for_action(self, action: str) -> str:
-        return LightPlanningReActRuntime._progress_text_for_action(self, action)
-
-    async def _follow_required_action(
-        self,
-        *,
-        observation: str,
-        scratchpad: List[Dict[str, str]],
-        messages: list[dict[str, Any]],
-        tool_registry: ToolRegistry,
-        progress: ProgressFunc,
-        trace: TraceFunc,
-        tools_used: List[str],
-    ) -> None:
-        result = self._parse_tool_result(observation)
-        if not result or result.ok or not result.required_action:
-            return
-        forced_tool = str(result.required_action.get("tool", "")).strip()
-        forced_input = result.required_action.get("input") or {}
-        if not forced_tool or not tool_registry.has(forced_tool):
-            return
-        await progress(self._progress_text_for_action(forced_tool))
-        serialized_input = json.dumps(forced_input, ensure_ascii=False)
-        forced_observation, normalized_input = await tool_registry.execute(forced_tool, serialized_input)
-        scratchpad.append(
-            {
-                "thought": f"根据工具失败结果，直接执行修复动作 {forced_tool}。",
-                "action": forced_tool,
-                "action_input": normalized_input,
-                "observation": forced_observation,
-            }
-        )
-        if forced_tool not in tools_used:
-            tools_used.append(forced_tool)
-        await trace(f"根据工具失败结果，直接执行修复动作 {forced_tool}。", forced_tool, forced_observation)
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    f"系统已根据工具失败结果自动执行修复动作 {forced_tool}。"
-                    f"\n修复动作结果：{forced_observation}"
-                ),
-            }
-        )
+    def _parse_json_object(self, text: str) -> Dict[str, Any]:
+        text = text.strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return {}
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return {}
 
     def _parse_tool_result(self, observation: str) -> ToolResult | None:
-        text = observation.strip()
-        if not text:
-            return None
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            return None
+        payload = self._parse_json_object(observation)
         if not isinstance(payload, dict) or "ok" not in payload:
             return None
         try:
             return ToolResult.model_validate(payload)
         except Exception:
             return None
+
+    def _build_tool_event(self, action: str, observation: str) -> dict[str, str]:
+        result = self._parse_tool_result(observation)
+        if result is None:
+            return {"name": action, "status": "ok", "detail": observation[:400]}
+        return {
+            "name": action,
+            "status": "ok" if result.ok else "error",
+            "detail": (result.summary or observation)[:400],
+        }
+
+    def _progress_text_for_action(self, action: str) -> str:
+        mapping = {
+            "create_task_board": "Agent 正在创建当前轮次任务板...",
+            "read_task_board": "Agent 正在读取当前轮次任务板...",
+            "update_task_status": "Agent 正在更新当前轮次任务状态...",
+            "run_keyframe_vision_subagent": "Agent 正在调用关键帧视觉子代理...",
+            "read_video_context": "Agent 正在读取视频上下文...",
+            "read_manual": "Agent 正在读取产品说明...",
+            "read_current_artifacts": "Agent 正在读取当前产物...",
+            "derive_clip_segments": "Agent 正在建立原视频片段映射...",
+            "run_video_edit_subagent": "Agent 正在委托剪辑导出子代理执行视频导出...",
+            "read_video_edit_context": "Agent 正在读取视频导出上下文...",
+            "render_clip_segment": "Agent 正在渲染单个视频片段...",
+            "merge_rendered_segments": "Agent 正在合并已渲染片段并生成成片...",
+            "write_subtitles": "Agent 正在生成字幕草稿...",
+            "write_edit_plan": "Agent 正在生成剪辑方案...",
+            "write_title": "Agent 正在生成英文标题...",
+            "write_tags": "Agent 正在生成标签...",
+        }
+        return mapping.get(action, "Agent 正在执行工具...")
 
     def _forced_action_for_requested_tool(
         self,
@@ -448,9 +754,7 @@ class AgentRunner:
             if str(item.get("action", "")).strip() != requested_tool:
                 continue
             result = self._parse_tool_result(str(item.get("observation", "")))
-            if result is None:
-                return None
-            if result.ok or result.retry_same_tool_allowed:
+            if result is None or result.ok or result.retry_same_tool_allowed:
                 return None
             required_action = result.required_action or {}
             required_tool = str(required_action.get("tool", "")).strip()
@@ -482,333 +786,3 @@ class AgentRunner:
             if result and result.ok and (not expected_input or actual_input == expected_input):
                 return True
         return False
-
-
-class LightPlanningReActRuntime:
-    """Explicit Python implementation of a lightweight-planning ReAct loop."""
-
-    def __init__(
-        self,
-        *,
-        adapter: AIAdapter,
-        model: str,
-        tool_registry: ToolRegistry,
-        max_steps: int,
-        timeout_seconds: int,
-    ) -> None:
-        self._adapter = adapter
-        self._model = model
-        self._tool_registry = tool_registry
-        self._max_steps = max_steps
-        self._timeout_seconds = timeout_seconds
-
-    async def run(
-        self,
-        *,
-        user_prompt: str,
-        task_brief: str,
-        context_prompt: str,
-        completion_guard: Callable[[List[Dict[str, str]]], bool],
-        fallback_step: Callable[[List[Dict[str, str]]], ReActStep],
-        should_skip_step: Callable[[ReActStep, List[Dict[str, str]]], bool] | None,
-        progress: ProgressFunc,
-        trace: TraceFunc,
-        planner_stream: PlannerStreamFunc | None = None,
-    ) -> LightPlanningReActResult:
-        scratchpad: List[Dict[str, str]] = []
-        for _ in range(self._max_steps):
-            await progress("Agent 正在规划下一步执行动作...")
-            step = await self._next_step(
-                user_prompt=user_prompt,
-                task_brief=task_brief,
-                context_prompt=context_prompt,
-                scratchpad=scratchpad,
-                planner_stream=planner_stream,
-            )
-            if not step.action:
-                step = fallback_step(scratchpad)
-            if step.action == "finalize":
-                if completion_guard(scratchpad):
-                    break
-                step = fallback_step(scratchpad)
-                if step.action == "finalize":
-                    break
-
-            if should_skip_step and should_skip_step(step, scratchpad):
-                step = fallback_step(scratchpad)
-                if step.action == "finalize":
-                    break
-
-            forced_action = self._forced_action_for_requested_tool(step.action, scratchpad)
-            if forced_action is not None:
-                step = ReActStep(
-                    thought=f"工具 {step.action} 当前不允许直接重试，先执行修复动作。",
-                    action=forced_action["tool"],
-                    action_input=json.dumps(forced_action.get("input", {}), ensure_ascii=False),
-                )
-
-            if step.action not in self._tool_registry.tools:
-                step = fallback_step(scratchpad)
-                if step.action == "finalize":
-                    break
-
-            tool = self._tool_registry.get(step.action)
-            await progress(self._progress_text_for_action(step.action))
-            tool_input = tool.validate_json(step.action_input)
-            observation = await tool.run(tool_input)
-            scratchpad.append(
-                {
-                    "thought": step.thought,
-                    "action": step.action,
-                    "action_input": step.action_input,
-                    "observation": observation,
-                }
-            )
-            await trace(step.thought, step.action, observation)
-            auto_result = await self._follow_required_action(
-                action=step.action,
-                observation=observation,
-                scratchpad=scratchpad,
-                progress=progress,
-                trace=trace,
-            )
-            if auto_result == "break":
-                break
-            if completion_guard(scratchpad):
-                break
-
-        return LightPlanningReActResult(scratchpad=scratchpad)
-
-    async def _next_step(
-        self,
-        *,
-        user_prompt: str,
-        task_brief: str,
-        context_prompt: str,
-        scratchpad: List[Dict[str, str]],
-        planner_stream: PlannerStreamFunc | None = None,
-    ) -> ReActStep:
-        prompt = (
-            REACT_AGENT_PROMPT_PREFIX
-            + _runtime_block("可用工具", self._tool_registry.render_prompt())
-            + _runtime_block("用户需求", user_prompt)
-            + _runtime_block("本轮任务简报", task_brief)
-            + _runtime_block("上下文", context_prompt)
-            + _runtime_block("已有观察", json.dumps(scratchpad, ensure_ascii=False))
-        )
-        content = ""
-        pending_delta = ""
-        last_emit_chars = 0
-        async for delta in self._adapter.stream(
-            AICompletionRequest(
-                model=self._model,
-                timeout_seconds=self._timeout_seconds,
-                require_json=True,
-                messages=[AIMessage(role="user", content=prompt)],
-            )
-        ):
-            if not delta:
-                continue
-            content += delta
-            pending_delta += delta
-            if planner_stream and len(content) - last_emit_chars >= 40:
-                await planner_stream(content, pending_delta)
-                pending_delta = ""
-                last_emit_chars = len(content)
-        if planner_stream and pending_delta:
-            await planner_stream(content, pending_delta)
-        parsed = self._parse_json_object(content)
-        if not isinstance(parsed, dict):
-            return ReActStep(thought="", action="", action_input="")
-        return ReActStep(
-            thought=str(parsed.get("thought", "")).strip(),
-            action=str(parsed.get("action", "")).strip(),
-            action_input=str(parsed.get("action_input", "")).strip(),
-        )
-
-    def _parse_json_object(self, text: str) -> Dict[str, Any]:
-        text = text.strip()
-        if not text:
-            return {}
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                return {}
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                return {}
-
-    def _progress_text_for_action(self, action: str) -> str:
-        mapping = {
-            "create_task_board": "Agent 正在创建当前轮次任务板...",
-            "read_task_board": "Agent 正在读取当前轮次任务板...",
-            "update_task_status": "Agent 正在更新当前轮次任务状态...",
-            "run_keyframe_vision_subagent": "Agent 正在调用关键帧视觉子代理...",
-            "read_video_context": "Agent 正在读取视频上下文...",
-            "read_manual": "Agent 正在读取产品说明...",
-            "read_current_artifacts": "Agent 正在读取当前产物...",
-            "derive_clip_segments": "Agent 正在建立原视频片段映射...",
-            "run_video_edit_subagent": "Agent 正在委托剪辑导出子代理执行视频导出...",
-            "read_video_edit_context": "Agent 正在读取视频导出上下文...",
-            "render_clip_segment": "Agent 正在渲染单个视频片段...",
-            "merge_rendered_segments": "Agent 正在合并已渲染片段并生成成片...",
-            "write_subtitles": "Agent 正在生成字幕草稿...",
-            "write_edit_plan": "Agent 正在生成剪辑方案...",
-            "write_title": "Agent 正在生成英文标题...",
-            "write_tags": "Agent 正在生成标签...",
-        }
-        return mapping.get(action, "Agent 正在执行工具...")
-
-    async def _follow_required_action(
-        self,
-        *,
-        action: str,
-        observation: str,
-        scratchpad: List[Dict[str, str]],
-        progress: ProgressFunc,
-        trace: TraceFunc,
-    ) -> str | None:
-        del action
-        tool_result = self._parse_tool_result(observation)
-        if not tool_result or tool_result.ok or not tool_result.required_action:
-            return None
-        forced_tool = str(tool_result.required_action.get("tool", "")).strip()
-        forced_input = tool_result.required_action.get("input") or {}
-        if not forced_tool:
-            return None
-        if forced_tool not in self._tool_registry.tools:
-            return None
-        await progress(self._progress_text_for_action(forced_tool))
-        serialized_input = json.dumps(forced_input, ensure_ascii=False)
-        tool = self._tool_registry.get(forced_tool)
-        tool_input = tool.validate_json(serialized_input)
-        forced_observation = await tool.run(tool_input)
-        scratchpad.append(
-            {
-                "thought": f"根据工具失败结果，直接执行修复动作 {forced_tool}。",
-                "action": forced_tool,
-                "action_input": serialized_input,
-                "observation": forced_observation,
-            }
-        )
-        await trace(f"根据工具失败结果，直接执行修复动作 {forced_tool}。", forced_tool, forced_observation)
-        return None
-
-    def _parse_tool_result(self, observation: str) -> ToolResult | None:
-        payload = self._parse_json_object(observation)
-        if not isinstance(payload, dict) or "ok" not in payload:
-            return None
-        try:
-            return ToolResult.model_validate(payload)
-        except Exception:
-            return None
-
-    def _forced_action_for_requested_tool(
-        self,
-        action: str,
-        scratchpad: List[Dict[str, str]],
-    ) -> dict[str, Any] | None:
-        for item in reversed(scratchpad):
-            if str(item.get("action", "")).strip() != action:
-                continue
-            result = self._parse_tool_result(str(item.get("observation", "")))
-            if result is None:
-                return None
-            if result.ok:
-                return None
-            if result.retry_same_tool_allowed:
-                return None
-            required_action = result.required_action or {}
-            required_tool = str(required_action.get("tool", "")).strip()
-            required_input = required_action.get("input") or {}
-            if not required_tool:
-                return None
-            if self._has_successful_tool_call_after(
-                required_tool,
-                required_input,
-                scratchpad,
-                item,
-            ):
-                return None
-            return {"tool": required_tool, "input": required_input}
-        return None
-
-    def _has_successful_tool_call_after(
-        self,
-        tool_name: str,
-        tool_input: dict[str, Any],
-        scratchpad: List[Dict[str, str]],
-        anchor: Dict[str, str],
-    ) -> bool:
-        try:
-            start_index = scratchpad.index(anchor) + 1
-        except ValueError:
-            start_index = 0
-        expected_input = json.dumps(tool_input, ensure_ascii=False)
-        for item in scratchpad[start_index:]:
-            if str(item.get("action", "")).strip() != tool_name:
-                continue
-            actual_input = str(item.get("action_input", "")).strip()
-            result = self._parse_tool_result(str(item.get("observation", "")))
-            if result and result.ok and (not expected_input or actual_input == expected_input):
-                return True
-        return False
-
-
-class OpenAIToolCallingRuntime:
-    def __init__(
-        self,
-        *,
-        model: str,
-        base_url: str,
-        api_key: str,
-        tool_registry: ToolRegistry,
-        max_steps: int,
-        timeout_seconds: int,
-        system_prompt: str = OPENAI_TOOL_CALLING_PROMPT_PREFIX,
-    ) -> None:
-        if not api_key:
-            raise ValueError("tool-calling runtime api key is not configured")
-        client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url.rstrip("/"),
-            timeout=timeout_seconds,
-        )
-        self._runner = AgentRunner(client)
-        self._model = model
-        self._tool_registry = tool_registry
-        self._max_steps = max_steps
-        self._system_prompt = system_prompt
-
-    async def run(
-        self,
-        *,
-        user_prompt: str,
-        task_brief: str,
-        context_prompt: str,
-        completion_guard: Callable[[List[Dict[str, str]]], bool] | None = None,
-        progress: ProgressFunc,
-        trace: TraceFunc,
-    ) -> OpenAIToolCallingResult:
-        result = await self._runner.run(
-            AgentRunSpec(
-                model=self._model,
-                system_prompt=self._system_prompt,
-                user_prompt=user_prompt,
-                task_brief=task_brief,
-                context_prompt=context_prompt,
-                tool_registry=self._tool_registry,
-                max_steps=self._max_steps,
-                completion_guard=completion_guard,
-                progress=progress,
-                trace=trace,
-            )
-        )
-        return OpenAIToolCallingResult(
-            scratchpad=result.scratchpad,
-            final_text=result.final_text,
-        )

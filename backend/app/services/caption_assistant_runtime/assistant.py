@@ -8,7 +8,9 @@ from threading import Lock
 from typing import Any, AsyncIterator, Dict, List
 from uuid import uuid4
 
-from app.agent.runtime import LightPlanningReActRuntime, OpenAIToolCallingRuntime, ReActStep, ToolRegistry
+from openai import AsyncOpenAI
+
+from app.agent.runtime import AgentHook, AgentHookContext, AgentRunSpec, AgentRunner, ReActStep, ToolRegistry
 from app.core.config import settings
 from app.models import AgentTurn, AnalysisMode, CaptionSession, EditedVideoArtifact, GlobalEditingState, TurnEventItem, TurnTaskBoard, serialize_session_summary, utcnow
 from app.services.caption_assistant_runtime.broker import CaptionEventBroker
@@ -42,6 +44,30 @@ from app.services.caption_assistant_runtime.tools import (
 from app.services.caption_assistant_runtime.video_context import VideoContextService
 from app.services.caption_assistant_runtime.video_edit_agent import VideoEditExportSubAgent, VideoEditSubAgentContext
 from app.services.caption_assistant_runtime.video_export import VideoExportService
+
+
+class CaptionTurnHook(AgentHook):
+    def __init__(
+        self,
+        assistant: "CaptionConversationAssistant",
+        session: CaptionSession,
+        turn: AgentTurn,
+    ) -> None:
+        self._assistant = assistant
+        self._session = session
+        self._turn = turn
+        self._emitted_scratchpad = 0
+
+    async def after_iteration(self, context: AgentHookContext) -> None:
+        while self._emitted_scratchpad < len(context.scratchpad):
+            item = context.scratchpad[self._emitted_scratchpad]
+            self._emitted_scratchpad += 1
+            await self._assistant.append_turn_thought(
+                self._session,
+                self._turn,
+                str(item.get("thought", "")),
+                str(item.get("observation", "")),
+            )
 
 
 class CaptionConversationAssistant:
@@ -223,28 +249,30 @@ class CaptionConversationAssistant:
         task_brief: str,
     ) -> tuple[List[Dict[str, str]], str]:
         registry = self.build_tool_registry(session, turn, working_state, user_prompt, targets)
-        runtime = OpenAIToolCallingRuntime(
-            model=settings.deepseek_chat_model,
-            base_url=settings.deepseek_base_url,
-            api_key=settings.deepseek_api_key or "",
-            tool_registry=registry,
-            max_steps=settings.agent_max_steps,
-            timeout_seconds=settings.glm_request_timeout_seconds,
+        if not settings.deepseek_api_key:
+            raise ValueError("tool-calling runtime api key is not configured")
+        runner = AgentRunner(
+            client=AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url.rstrip("/"),
+                timeout=settings.glm_request_timeout_seconds,
+            )
         )
-        result = await runtime.run(
-            user_prompt=user_prompt,
-            task_brief=task_brief,
-            context_prompt=self.build_runtime_context_prompt(session, working_state, targets),
-            completion_guard=self.build_completion_guard(turn, targets, working_state),
-            progress=self.noop_progress,
-            trace=lambda thought, _action, observation: self.append_turn_thought(
-                session,
-                turn,
-                thought,
-                observation,
-            ),
+        result = await runner.run(
+            AgentRunSpec(
+                mode="openai_tools",
+                model=settings.deepseek_chat_model,
+                tool_registry=registry,
+                max_iterations=settings.agent_max_steps,
+                timeout_seconds=settings.glm_request_timeout_seconds,
+                user_prompt=user_prompt,
+                task_brief=task_brief,
+                context_prompt=self.build_runtime_context_prompt(session, working_state, targets),
+                completion_guard=self.build_completion_guard(turn, targets, working_state),
+                hook=self.build_agent_hook(session, turn),
+            )
         )
-        return result.scratchpad, result.final_text
+        return result.scratchpad, result.final_content
 
     async def finalize_turn(
         self,
@@ -386,6 +414,9 @@ class CaptionConversationAssistant:
             turn,
             TurnEventItem(type="thought", content=content),
         )
+
+    def build_agent_hook(self, session: CaptionSession, turn: AgentTurn) -> AgentHook:
+        return CaptionTurnHook(self, session, turn)
 
     def build_tool_registry(
         self,
@@ -798,9 +829,6 @@ class CaptionConversationAssistant:
             return any(item.get("action") == step.action for item in scratchpad)
 
         return should_skip
-
-    async def noop_progress(self, _message: str) -> None:
-        return
 
     def get_turn(self, session: CaptionSession, turn_id: str) -> AgentTurn:
         for turn in session.turns:
